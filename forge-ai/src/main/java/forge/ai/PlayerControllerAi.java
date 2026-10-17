@@ -794,6 +794,9 @@ public class PlayerControllerAi extends PlayerController {
 
     @Override
     public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn)  {
+        if (brains.comboPlannerEnabled() && player.getStats().getMulliganCount() < 2) {
+            return brains.getComboPlanner().keepHand();
+        }
         return !ComputerUtil.wantMulligan(player, cardsToReturn);
     }
 

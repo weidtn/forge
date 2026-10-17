@@ -240,4 +240,20 @@ public final class ComboPlanner {
     public boolean wantsToExileLibraryWithPact() {
         return findByName(ai.getCardsIn(ZoneType.Hand), ComboLibrary.ORACLE) != null;
     }
+
+    /** Opening-hand check: keep iff the hand has a combo piece or tutor, and at least two mana sources. */
+    public boolean keepHand() {
+        boolean hasPiece = false;
+        int sources = 0;
+        for (Card c : ai.getCardsIn(ZoneType.Hand)) {
+            String name = c.getName();
+            if (ComboLibrary.TUTORS.containsKey(name) || ComboLibrary.ALL.stream().anyMatch(l -> l.castOrder().contains(name))) {
+                hasPiece = true;
+            }
+            if (c.isLand() || !c.getManaAbilities().isEmpty()) {
+                sources++;
+            }
+        }
+        return hasPiece && sources >= 2;
+    }
 }

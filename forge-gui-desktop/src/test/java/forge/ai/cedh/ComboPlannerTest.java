@@ -173,4 +173,30 @@ public class ComboPlannerTest extends AITest {
                 1, countCardsWithName(game, "Vampiric Tutor", ZoneType.Graveyard));
         AssertJUnit.assertEquals(ComboLibrary.ORACLE, p.getCardsIn(ZoneType.Library).get(0).getName());
     }
+
+    @Test
+    public void keepsHandWithPieceAndTwoLands() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Hand);
+        addCardToZone("Island", p, ZoneType.Hand);
+        addCardToZone("Swamp", p, ZoneType.Hand);
+        for (int i = 0; i < 4; i++) {
+            addCardToZone("Runeclaw Bear", p, ZoneType.Hand);
+        }
+        AssertJUnit.assertTrue(planner(p).keepHand());
+    }
+
+    @Test
+    public void mulligansHandWithoutPieces() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone("Island", p, ZoneType.Hand);
+        addCardToZone("Swamp", p, ZoneType.Hand);
+        addCardToZone("Swamp", p, ZoneType.Hand);
+        for (int i = 0; i < 4; i++) {
+            addCardToZone("Runeclaw Bear", p, ZoneType.Hand);
+        }
+        AssertJUnit.assertFalse(planner(p).keepHand());
+    }
 }
