@@ -5,6 +5,7 @@ import forge.LobbyPlayer;
 import forge.StaticData;
 import forge.ai.ability.ProtectAi;
 import forge.ai.ability.PutStickerAi;
+import forge.ai.cedh.ComboLibrary;
 import forge.card.CardStateName;
 import forge.card.ColorSet;
 import forge.card.ICardFace;
@@ -387,6 +388,11 @@ public class PlayerControllerAi extends PlayerController {
 
     @Override
     public boolean confirmAction(SpellAbility sa, PlayerActionConfirmMode mode, String message, List<String> options, Card cardToShow, Map<String, Object> params) {
+        if (brains.comboPlannerEnabled() && sa != null && sa.getHostCard() != null
+                && ComboLibrary.TAINTED_PACT.equals(sa.getHostCard().getName())
+                && brains.getComboPlanner().wantsToExileLibraryWithPact()) {
+            return false; // keep exiling: we're emptying the library for Oracle
+        }
         return getAi().confirmAction(sa, mode, message, params);
     }
 
@@ -1523,6 +1529,13 @@ public class PlayerControllerAi extends PlayerController {
 
     @Override
     public String chooseCardName(SpellAbility sa, Predicate<ICardFace> cpp, String valid, String message) {
+        if (brains.comboPlannerEnabled() && sa.getHostCard() != null
+                && ComboLibrary.CONSULTATION.equals(sa.getHostCard().getName())) {
+            String name = brains.getComboPlanner().consultationName();
+            if (name != null) {
+                return name;
+            }
+        }
         if (sa.hasParam("AILogic")) {
             CardCollectionView aiLibrary = player.getCardsIn(ZoneType.Library);
             CardCollectionView oppLibrary = player.getStrongestOpponent().getCardsIn(ZoneType.Library);

@@ -23,6 +23,8 @@ import com.google.common.collect.Sets;
 import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ability.ChangeZoneAi;
 import forge.ai.ability.LearnAi;
+import forge.ai.cedh.ComboLibrary;
+import forge.ai.cedh.ComboPlanner;
 import forge.ai.simulation.GameStateEvaluator;
 import forge.ai.simulation.OnePlaySafetyChecker;
 import forge.ai.simulation.SpellAbilityPicker;
@@ -94,6 +96,7 @@ public class AiController {
     private Combat predictedCombatNextTurn;
     private AIOption simMode;
     private SpellAbilityPicker simPicker;
+    private final ComboPlanner comboPlanner;
     private int lastAttackAggression;
     private boolean useLivingEnd;
     private List<SpellAbility> skipped;
@@ -103,6 +106,7 @@ public class AiController {
         game = game0;
         memory = new AiCardMemory();
         simPicker = new SpellAbilityPicker(player);
+        comboPlanner = new ComboPlanner(player);
     }
 
     public boolean usesHybridSimulation() {
@@ -121,6 +125,14 @@ public class AiController {
 
     public SpellAbilityPicker getSimulationPicker() {
         return simPicker;
+    }
+
+    public ComboPlanner getComboPlanner() {
+        return comboPlanner;
+    }
+
+    public boolean comboPlannerEnabled() {
+        return getBoolProperty(AiProps.CEDH_COMBO_PLANNER);
     }
 
     public Game getGame() {
@@ -1442,6 +1454,13 @@ public class AiController {
         // Reset priority mana reservation that's meant to work for one spell only
         memory.clearMemorySet(AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
 
+        if (comboPlannerEnabled()) {
+            SpellAbility comboStep = comboPlanner.nextStep();
+            if (comboStep != null) {
+                return singleSpellAbilityList(comboStep);
+            }
+        }
+
         if (usesFullSimulation()) {
             return singleSpellAbilityList(simPicker.chooseSpellAbilityToPlay(null));
         }
@@ -1647,7 +1666,9 @@ public class AiController {
         saList.removeIf(spellAbility -> {
             // don't include removedAI cards if somehow the AI can play the ability or gain control of unsupported card
             // TODO allow when experimental profile?
-            return spellAbility.isLandAbility() || (spellAbility.getHostCard() != null && ComputerUtilCard.isCardRemAIDeck(spellAbility.getHostCard()));
+            return spellAbility.isLandAbility()
+                    || (spellAbility.getHostCard() != null && ComputerUtilCard.isCardRemAIDeck(spellAbility.getHostCard()))
+                    || (comboPlannerEnabled() && ComboLibrary.isComboOnly(spellAbility.getHostCard()));
         });
         //removed skipped SA
         skipped = saList.stream().filter(SpellAbility::isSkip).collect(Collectors.toList());
