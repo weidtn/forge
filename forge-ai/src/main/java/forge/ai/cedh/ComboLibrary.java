@@ -2,7 +2,9 @@ package forge.ai.cedh;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import forge.game.card.Card;
 import forge.game.card.CardCollectionView;
@@ -36,6 +38,19 @@ public final class ComboLibrary {
             new ComboLine("thoracle-finish", List.of(ORACLE), p -> libraryAtMost(p, 2)),
             new ComboLine("thoracle-consult", List.of(CONSULTATION, ORACLE), p -> true),
             new ComboLine("thoracle-pact", List.of(TAINTED_PACT, ORACLE), ComboLibrary::libraryHasNoDuplicateNames)
+    );
+
+    /**
+     * Tutors and what they can find. Destination (hand vs. top of library) is read from the card script.
+     * Demonic Tutor goes to hand; the rest put the card on top.
+     */
+    public static final Map<String, Predicate<Card>> TUTORS = Map.of(
+            "Demonic Tutor", c -> true,
+            "Vampiric Tutor", c -> true,
+            "Imperial Seal", c -> true,
+            "Mystical Tutor", c -> c.isInstant() || c.isSorcery(),
+            "Worldly Tutor", Card::isCreature,
+            "Personal Tutor", Card::isSorcery
     );
 
     /** Cards the normal AI must never cast on its own: they only make sense inside a line. */

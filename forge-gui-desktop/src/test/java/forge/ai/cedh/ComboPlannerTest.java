@@ -53,6 +53,17 @@ public class ComboPlannerTest extends AITest {
     }
 
     @Test
+    public void nothingWhenColoursDontFit() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCards("Swamp", 2, p);
+        addCard("Island", p);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Hand);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Hand);
+        AssertJUnit.assertNull(planner(p).nextStep());
+    }
+
+    @Test
     public void nothingWithoutOracle() {
         Game game = initAndCreateGame();
         Player p = setup(game);
@@ -125,5 +136,41 @@ public class ComboPlannerTest extends AITest {
 
         AssertJUnit.assertTrue(game.isGameOver());
         AssertJUnit.assertTrue(p.hasWon());
+    }
+
+    @Test
+    public void winsWithDemonicTutorForOracle() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
+        addCards("Island", 2, p);
+        addCards("Swamp", 3, p);
+        addCardToZone("Demonic Tutor", p, ZoneType.Hand);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Hand);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 500);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+    }
+
+    @Test
+    public void vampiricTutorPutsOracleOnTop() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library); // bottom: below the 20 bears
+        addCards("Island", 2, p);
+        addCards("Swamp", 2, p);
+        addCardToZone("Vampiric Tutor", p, ZoneType.Hand);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Hand);
+
+        for (int i = 0; i < 500 && !game.isGameOver()
+                && countCardsWithName(game, "Vampiric Tutor", ZoneType.Graveyard) == 0; i++) {
+            game.getPhaseHandler().mainLoopStep();
+        }
+
+        AssertJUnit.assertEquals("Vampiric Tutor should have resolved",
+                1, countCardsWithName(game, "Vampiric Tutor", ZoneType.Graveyard));
+        AssertJUnit.assertEquals(ComboLibrary.ORACLE, p.getCardsIn(ZoneType.Library).get(0).getName());
     }
 }

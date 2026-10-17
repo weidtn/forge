@@ -1606,6 +1606,13 @@ public class PlayerControllerAi extends PlayerController {
         if (delayedReveal != null) {
             reveal(delayedReveal);
         }
+        if (brains.comboPlannerEnabled() && sa.getApi() == ApiType.ChangeZone
+                && (destination == ZoneType.Hand || destination == ZoneType.Library)) {
+            Card piece = brains.getComboPlanner().tutorTarget(fetchList);
+            if (piece != null) {
+                return piece; // fetch the card that completes a combo line
+            }
+        }
         return brains.chooseCardToHiddenOriginChangeZone(destination, origin, sa, fetchList, player, decider);
     }
 
