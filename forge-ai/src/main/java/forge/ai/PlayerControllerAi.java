@@ -1396,6 +1396,14 @@ public class PlayerControllerAi extends PlayerController {
             sa.setTargetingPlayer(targetingPlayer);
             return targetingPlayer.getController().chooseTargetsFor(sa);
         }
+        if (brains.comboPlannerEnabled()) {
+            GameEntity planned = brains.getComboPlanner().triggerTarget(sa);
+            if (planned != null) {
+                sa.resetTargets();
+                sa.getTargets().add(planned);
+                return true; // the target that keeps a combo line going
+            }
+        }
         return brains.doTrigger(sa, isMandatory);
     }
 

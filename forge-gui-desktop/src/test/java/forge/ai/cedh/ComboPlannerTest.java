@@ -7,6 +7,9 @@ import forge.ai.AITest;
 import forge.ai.LobbyPlayerAi;
 import forge.ai.PlayerControllerAi;
 import forge.game.Game;
+import forge.game.ability.ApiType;
+import forge.game.card.Card;
+import forge.game.card.CounterEnumType;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
@@ -172,6 +175,56 @@ public class ComboPlannerTest extends AITest {
         AssertJUnit.assertEquals("Vampiric Tutor should have resolved",
                 1, countCardsWithName(game, "Vampiric Tutor", ZoneType.Graveyard));
         AssertJUnit.assertEquals(ComboLibrary.ORACLE, p.getCardsIn(ZoneType.Library).get(0).getName());
+    }
+
+    @Test
+    public void heliodLineFirstGivesBallistaLifelink() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCards("Plains", 2, p);
+        addCard("Heliod, Sun-Crowned", p);
+        Card ballista = addCard("Walking Ballista", p);
+        ballista.setCounters(CounterEnumType.P1P1, 2);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = planner(p).nextStep();
+
+        AssertJUnit.assertNotNull(sa);
+        AssertJUnit.assertEquals("Heliod, Sun-Crowned", sa.getHostCard().getName());
+        AssertJUnit.assertEquals(ApiType.Pump, sa.getApi());
+        AssertJUnit.assertEquals(ballista, sa.getTargets().getFirstTargetedCard());
+    }
+
+    @Test
+    public void nothingWhenBallistaWouldDieToItsOwnPing() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCards("Plains", 2, p);          // pays the lifelink pump, not Ballista's {4}
+        addCard("Heliod, Sun-Crowned", p);
+        Card ballista = addCard("Walking Ballista", p);
+        ballista.setCounters(CounterEnumType.P1P1, 1);
+        game.getAction().checkStateEffects(true);
+
+        AssertJUnit.assertNull(planner(p).nextStep());
+    }
+
+    @Test
+    public void winsWithHeliodBallista() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        addCards("Plains", 2, p);
+        addCard("Heliod, Sun-Crowned", p);
+        Card ballista = addCard("Walking Ballista", p);
+        ballista.setCounters(CounterEnumType.P1P1, 2);
+        addCard("Colossal Dreadmaw", p);   // stock trigger AI would put Heliod's counters here
+        game.getAction().checkStateEffects(true);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
     }
 
     @Test

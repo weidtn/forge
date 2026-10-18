@@ -7,18 +7,26 @@ import java.util.function.Predicate;
 import forge.ai.AiCardMemory;
 import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ComputerUtilAbility;
+import forge.ai.ComputerUtilCost;
 import forge.ai.ComputerUtilMana;
 import forge.card.mana.ManaCost;
+import forge.game.GameEntity;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
+import forge.game.trigger.WrappedAbility;
 import forge.game.zone.ZoneType;
 
 public final class ComboPlanner {
+    /** Backstop against a line that loops without progress: planner actions allowed per turn. */
+    static final int MAX_ACTIONS_PER_TURN = 300;
+
     private final Player ai;
+    private int actionTurn = -1;
+    private int actionsThisTurn;
 
     public ComboPlanner(Player ai) {
         this.ai = ai;
@@ -33,10 +41,55 @@ public final class ComboPlanner {
         return null;
     }
 
-    /** The card's first spell ability, used to price it in any zone; null if it has none. */
-    private SpellAbility firstSpell(Card c) {
+    /** A spell of this card we can cast and pay for right now announcing {@code x}, or null. */
+    private SpellAbility castableSpell(Card c, int x) {
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(new CardCollection(c), ai)) {
+            if (!sa.isSpell()) {
+                continue;
+            }
+            if (x > 0) {
+                sa.setXManaCostPaid(x);
+            }
+            if (sa.canPlay() && ComputerUtilMana.canPayManaCost(sa, ai, 0, false)) {
+                return sa;
+            }
+        }
+        return null;
+    }
+
+    /** The non-mana ability of our permanent {@code c} with this api, targeted as the step says, if playable now. */
+    private SpellAbility activatableAbility(Card c, ComboStep.Activate step) {
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(new CardCollection(c), ai)) {
+            if (sa.isSpell() || sa.isManaAbility() || sa.getApi() != step.api()) {
+                continue;
+            }
+            if (step.target() != null) {
+                GameEntity target = step.target().pick(ai);
+                sa.resetTargets();
+                if (target == null || !sa.canTarget(target)) {
+                    continue;
+                }
+                sa.getTargets().add(target);
+            }
+            if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
+                return sa;
+            }
+        }
+        return null;
+    }
+
+    /** The step's ability on {@code c} (in any zone), unprepared except for X; used for pricing. Null if none. */
+    private SpellAbility pricedAbility(ComboStep step, Card c) {
         for (SpellAbility sa : c.getSpellAbilities()) {
-            if (sa.isSpell()) {
+            if (step instanceof ComboStep.Cast cast && sa.isSpell()) {
+                sa.setActivatingPlayer(ai);
+                if (cast.x() > 0) {
+                    sa.setXManaCostPaid(cast.x());
+                }
+                return sa;
+            }
+            if (step instanceof ComboStep.Activate activate && !sa.isSpell() && !sa.isManaAbility()
+                    && sa.getApi() == activate.api()) {
                 sa.setActivatingPlayer(ai);
                 return sa;
             }
@@ -44,14 +97,36 @@ public final class ComboPlanner {
         return null;
     }
 
-    /** A spell of this card we can cast and pay for right now, or null. */
-    private SpellAbility castableSpell(Card c) {
-        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(new CardCollection(c), ai)) {
-            if (sa.isSpell() && sa.canPlay() && ComputerUtilMana.canPayManaCost(sa, ai, 0, false)) {
-                return sa;
+    /** Our copy of a line card: on the battlefield, else in hand; null if neither. */
+    private Card ourCard(String name) {
+        Card c = findByName(ai.getCardsIn(ZoneType.Battlefield), name);
+        return c != null ? c : findByName(ai.getCardsIn(ZoneType.Hand), name);
+    }
+
+    /**
+     * Abilities of the line's setup steps whose guard holds now, plus the cast of {@code fetched} (a piece about
+     * to be tutored to hand) if the line casts it. Null if one of them can't be priced.
+     */
+    private List<SpellAbility> setupAbilities(ComboLine line, Card fetched) {
+        List<SpellAbility> result = new ArrayList<>();
+        for (ComboStep step : line.steps()) {
+            Card c;
+            if (!step.setup()) {
+                continue;
+            } else if (fetched != null && step instanceof ComboStep.Cast && step.card().equals(fetched.getName())) {
+                c = fetched;
+            } else if (step.when().test(ai)) {
+                c = ourCard(step.card());
+            } else {
+                continue;
             }
+            SpellAbility sa = c == null ? null : pricedAbility(step, c);
+            if (sa == null) {
+                return null;
+            }
+            result.add(sa);
         }
-        return null;
+        return result;
     }
 
     private ManaCost totalCost(List<SpellAbility> spells) {
@@ -65,6 +140,9 @@ public final class ComboPlanner {
 
     /** True if our current sources can pay for all these spells together (colours included). Taps nothing. */
     boolean canPayCombined(List<SpellAbility> spells) {
+        if (spells.isEmpty()) {
+            return true;
+        }
         ManaCost total = totalCost(spells);
         if (ComputerUtilMana.getAvailableManaEstimate(ai, false) < total.getCMC()) {
             return false; // cheap early-out before the shard-by-shard check
@@ -78,6 +156,9 @@ public final class ComboPlanner {
      * Returns false and reserves nothing if {@code now} can't be paid from what's left.
      */
     private boolean holdManaFor(List<SpellAbility> later, SpellAbility now) {
+        if (later.isEmpty()) {
+            return ComputerUtilMana.canPayManaCost(now, ai, 0, false);
+        }
         CardCollection held = ComputerUtilMana.getManaSourcesToPayCost(
                 new ManaCostBeingPaid(totalCost(later)), later.get(0), ai, false);
         if (held == null) {
@@ -95,22 +176,18 @@ public final class ComboPlanner {
         return false;
     }
 
-    /** All pieces in hand, extra condition holds, and the whole line is payable with our sources. */
+    /** All pieces in their zones, extra condition holds, and the line's pending setup is payable with our sources. */
     boolean isExecutable(ComboLine line) {
-        CardCollectionView hand = ai.getCardsIn(ZoneType.Hand);
-        List<SpellAbility> spells = new ArrayList<>();
-        for (String name : line.castOrder()) {
-            Card c = findByName(hand, name);
-            SpellAbility sa = c == null ? null : firstSpell(c);
-            if (sa == null) {
+        for (ComboPiece piece : line.pieces()) {
+            if (piece.find(ai) == null) {
                 return false;
             }
-            spells.add(sa);
         }
         if (!line.condition().test(ai)) {
             return false;
         }
-        return canPayCombined(spells);
+        List<SpellAbility> setup = setupAbilities(line, null);
+        return setup != null && canPayCombined(setup);
     }
 
     public ComboLine findExecutableLine() {
@@ -122,25 +199,24 @@ public final class ComboPlanner {
         return null;
     }
 
-    private static List<String> missingFrom(ComboLine line, CardCollectionView hand) {
+    private List<String> missingFrom(ComboLine line) {
         List<String> missing = new ArrayList<>();
-        for (String name : line.castOrder()) {
-            if (findByName(hand, name) == null) {
-                missing.add(name);
+        for (ComboPiece piece : line.pieces()) {
+            if (piece.find(ai) == null) {
+                missing.add(piece.card());
             }
         }
         return missing;
     }
 
     /**
-     * First line (in {@link ComboLibrary#ALL} order) that lacks exactly one piece in hand, provided that piece is in
-     * our library and the line's condition holds; else null.
+     * First line (in {@link ComboLibrary#ALL} order) that lacks exactly one piece, provided that piece is in our
+     * library and the line's condition holds; else null.
      */
     private ComboLine lineMissingOnePiece() {
-        CardCollectionView hand = ai.getCardsIn(ZoneType.Hand);
         CardCollectionView lib = ai.getCardsIn(ZoneType.Library);
         for (ComboLine line : ComboLibrary.ALL) {
-            List<String> missing = missingFrom(line, hand);
+            List<String> missing = missingFrom(line);
             if (missing.size() == 1 && findByName(lib, missing.get(0)) != null && line.condition().test(ai)) {
                 return line;
             }
@@ -151,7 +227,7 @@ public final class ComboPlanner {
     /** Name of the single library card that would complete a line (see {@link #lineMissingOnePiece()}), or null. */
     public String missingPiece() {
         ComboLine line = lineMissingOnePiece();
-        return line == null ? null : missingFrom(line, ai.getCardsIn(ZoneType.Hand)).get(0);
+        return line == null ? null : missingFrom(line).get(0);
     }
 
     /** The missing piece among a tutor's search options, or null. */
@@ -171,7 +247,7 @@ public final class ComboPlanner {
         }
         CardCollectionView hand = ai.getCardsIn(ZoneType.Hand);
         CardCollectionView lib = ai.getCardsIn(ZoneType.Library);
-        Card target = findByName(lib, missingFrom(line, hand).get(0));
+        Card target = findByName(lib, missingFrom(line).get(0));
         boolean alreadyOnTop = lib.get(0) == target;
         SpellAbility toTop = null;
         for (Card c : hand) {
@@ -179,19 +255,14 @@ public final class ComboPlanner {
             if (canFind == null || !canFind.test(target)) {
                 continue;
             }
-            SpellAbility sa = castableSpell(c);
+            SpellAbility sa = castableSpell(c, 0);
             if (sa == null) {
                 continue;
             }
             if (ZoneType.Hand.name().equals(sa.getParam("Destination"))) {
-                List<SpellAbility> lineSpells = new ArrayList<>();
-                for (String name : line.castOrder()) {
-                    Card piece = findByName(hand, name);
-                    SpellAbility pieceSa = firstSpell(piece != null ? piece : target);
-                    if (pieceSa == null) {
-                        return null;
-                    }
-                    lineSpells.add(pieceSa);
+                List<SpellAbility> lineSpells = setupAbilities(line, target);
+                if (lineSpells == null) {
+                    return null;
                 }
                 List<SpellAbility> all = new ArrayList<>();
                 all.add(sa);
@@ -206,19 +277,61 @@ public final class ComboPlanner {
         return toTop;
     }
 
+    /** The line's first step whose guard holds, prepared (X, targets) if it is playable now; else null (wait). */
+    private SpellAbility firstStep(ComboLine line) {
+        for (ComboStep step : line.steps()) {
+            if (!step.when().test(ai)) {
+                continue;
+            }
+            if (step instanceof ComboStep.Cast cast) {
+                Card c = findByName(ai.getCardsIn(ZoneType.Hand), cast.card());
+                return c == null ? null : castableSpell(c, cast.x());
+            }
+            ComboStep.Activate activate = (ComboStep.Activate) step;
+            Card c = findByName(ai.getCardsIn(ZoneType.Battlefield), activate.card());
+            return c == null ? null : activatableAbility(c, activate);
+        }
+        return null;
+    }
+
     /**
-     * Next spell to cast: the first step of an executable line, else a tutor for the missing piece, or null.
-     * Only acts on an empty stack (MVP).
+     * Next spell or ability to play: the first step of an executable line, else a tutor for the missing piece, or
+     * null. Only acts on an empty stack, and at most {@link #MAX_ACTIONS_PER_TURN} times per turn.
      */
     public SpellAbility nextStep() {
         if (!ai.getGame().getStack().isEmpty()) {
             return null;
         }
-        ComboLine line = findExecutableLine();
-        if (line == null) {
-            return tutorStep();
+        int turn = ai.getGame().getPhaseHandler().getTurn();
+        if (turn != actionTurn) {
+            actionTurn = turn;
+            actionsThisTurn = 0;
         }
-        return castableSpell(findByName(ai.getCardsIn(ZoneType.Hand), line.castOrder().get(0)));
+        if (actionsThisTurn >= MAX_ACTIONS_PER_TURN) {
+            return null;
+        }
+        ComboLine line = findExecutableLine();
+        SpellAbility sa = line == null ? tutorStep() : firstStep(line);
+        if (sa != null) {
+            actionsThisTurn++;
+        }
+        return sa;
+    }
+
+    /** Planned target for one of our triggers (e.g. Heliod's counter onto Ballista), or null to let the AI choose. */
+    public GameEntity triggerTarget(SpellAbility trigger) {
+        SpellAbility sa = trigger instanceof WrappedAbility wrapped ? wrapped.getWrappedAbility() : trigger;
+        if (sa.getHostCard() == null || !sa.usesTargeting()) {
+            return null;
+        }
+        for (ComboLine line : ComboLibrary.ALL) {
+            ComboTarget planned = line.triggerTargets().get(sa.getHostCard().getName());
+            GameEntity target = planned == null ? null : planned.pick(ai);
+            if (target != null && sa.canTarget(target)) {
+                return target;
+            }
+        }
+        return null;
     }
 
     /** A legal name guaranteed NOT to be in our library: prefer the win card if it's in hand. */
@@ -247,7 +360,7 @@ public final class ComboPlanner {
         int sources = 0;
         for (Card c : ai.getCardsIn(ZoneType.Hand)) {
             String name = c.getName();
-            if (ComboLibrary.TUTORS.containsKey(name) || ComboLibrary.ALL.stream().anyMatch(l -> l.castOrder().contains(name))) {
+            if (ComboLibrary.TUTORS.containsKey(name) || ComboLibrary.ALL.stream().anyMatch(l -> l.pieces().stream().anyMatch(pc -> pc.card().equals(name)))) {
                 hasPiece = true;
             }
             if (c.isLand() || !c.getManaAbilities().isEmpty()) {
