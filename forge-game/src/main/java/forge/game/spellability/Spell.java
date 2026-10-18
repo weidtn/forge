@@ -33,6 +33,7 @@ import forge.game.player.Player;
 import forge.game.player.PlayerController.FullControlFlag;
 import forge.game.replacement.ReplacementType;
 import forge.game.staticability.StaticAbilityCantBeCast;
+import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
 
 /**
@@ -97,6 +98,10 @@ public abstract class Spell extends SpellAbility implements java.io.Serializable
             return null;
         }
 
+        if (isOutsideCastingZone(card)) {
+            return null;
+        }
+
         // do performanceMode only for cases where the activator is different than controller
         if (!Spell.performanceMode && !card.getController().equals(activator)) {
             // always make a lki copy in this case?
@@ -116,6 +121,21 @@ public abstract class Spell extends SpellAbility implements java.io.Serializable
         }
 
         return card;
+    }
+
+    /**
+     * True if this spell's card is outside the zone it is cast from (normally the hand) and nothing lets it be cast
+     * there: no may-play permission on this spell, no effect casting it, no additional zone.
+     * {@link SpellAbilityRestriction#checkZoneRestrictions} rejects it too, but only after the LKI copy and the timing
+     * checks; every AI scans the exile zone on each priority, so with many exiled cards (a Knacksaw Clique loop) that
+     * work dominated.
+     */
+    private boolean isOutsideCastingZone(Card card) {
+        ZoneType castingZone = getRestrictions().getZone();
+        Zone cardZone = card.getLastKnownZone();
+        return getActivatingPlayer() != null && castingZone != null && getMayPlayOption() == null
+                && !isCastFromPlayEffect() && !hasParam("AdditionalActivationZone")
+                && (cardZone == null || !cardZone.is(castingZone));
     }
 
     /** {@inheritDoc} */

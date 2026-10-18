@@ -1117,7 +1117,10 @@ public final class StaticAbilityContinuous {
                 affectedCardsOriginal = new CardCollection(affectedCards);
             }
 
-            affectedCards = CardLists.getValidCards(affectedCards, stAb.getParam("Affected"), controller, hostCard, stAb);
+            String affected = stAb.getParam("Affected");
+            CardCollectionView candidates = affectsOnlyRemembered(affected)
+                    ? CardLists.filter(affectedCards, hostCard::isRemembered) : affectedCards;
+            affectedCards = CardLists.getValidCards(candidates, affected, controller, hostCard, stAb);
 
             // Add back all cards that are in other player's graveyard, and meet the restrictions without YouOwn/YouCtrl (treat it as in your graveyard)
             if (affectedCardsOriginal != null) {
@@ -1135,5 +1138,22 @@ public final class StaticAbilityContinuous {
 
         affectedCards.removeAll(stAb.getIgnoreEffectCards());
         return affectedCards;
+    }
+
+    /**
+     * True if every alternative of the {@code Affected} restriction requires {@code IsRemembered} (e.g. an impulse
+     * draw's "Card.IsRemembered"). Such a static can be matched against the host's remembered cards first, instead of
+     * running the whole property check on every card in its zone: with many such effects in one turn (Knacksaw Clique
+     * loops) that check made each static-ability pass quadratic in the exiled cards.
+     */
+    private static boolean affectsOnlyRemembered(String affected) {
+        for (String alternative : affected.split(",")) {
+            String[] typeAndProperties = alternative.split("\\.", 2);
+            if (typeAndProperties[0].startsWith("!") || typeAndProperties.length < 2
+                    || !Arrays.asList(typeAndProperties[1].split("\\+")).contains("IsRemembered")) {
+                return false;
+            }
+        }
+        return true;
     }
 }
