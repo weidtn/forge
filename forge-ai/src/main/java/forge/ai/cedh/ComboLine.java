@@ -12,11 +12,12 @@ import forge.game.player.Player;
  * {@code triggerTargets} maps a trigger's host card name to the target its trigger should take; {@code exileChoices}
  * maps a host card name to the card it should exile from hand (Isochron Scepter imprints Dramatic Reversal);
  * {@code soulbondPartners} maps a soulbond card name to the creature it should pair with (Deadeye Navigator with the
- * creature it flickers).
+ * creature it flickers); {@code choices} makes the resolution-time choices while the line is being played (the
+ * Scholar loop's targets, sacrifice and Inalla's {1}).
  */
 public record ComboLine(String id, List<ComboPiece> pieces, Predicate<Player> condition, List<ComboStep> steps,
         Map<String, ComboTarget> triggerTargets, Map<String, String> exileChoices,
-        Map<String, String> soulbondPartners) {
+        Map<String, String> soulbondPartners, ComboChoices choices) {
 
     /** All cards in hand, cast in this order. */
     static ComboLine castInOrder(String id, List<String> castOrder, Predicate<Player> condition) {
@@ -24,7 +25,7 @@ public record ComboLine(String id, List<ComboPiece> pieces, Predicate<Player> co
                 castOrder.stream().map(ComboPiece::inHand).toList(),
                 condition,
                 castOrder.stream().<ComboStep>map(ComboStep.Cast::fromHand).toList(),
-                Map.of(), Map.of(), Map.of());
+                Map.of(), Map.of(), Map.of(), ComboChoices.NONE);
     }
 
     public String winCard() {

@@ -44,6 +44,11 @@ public final class ComboLibrary {
     public static final String PERSIST = "Persist";
     public static final String NECROMANCY = "Necromancy";
     public static final String CORPSE_DANCE = "Corpse Dance";
+    public static final String INALLA = "Inalla, Archmage Ritualist";
+    public static final String SCHOLAR = "Scholar of the Ages";
+    public static final String BURNT_OFFERING = "Burnt Offering";
+    public static final String SACRIFICE = "Sacrifice";
+    public static final String CULLING = "Culling the Weak";
 
     /** Spells of the Oracle-reanimate lines, cheapest first (Unearth before Reanimate: same mana, no life). */
     static final List<String> REANIMATORS = List.of(UNEARTH, REANIMATE, SHALLOW_GRAVE, PERSIST, NECROMANCY, CORPSE_DANCE);
@@ -109,7 +114,7 @@ public final class ComboLibrary {
                                 p -> !ballistaHasLifelink(p), true),
                         new ComboStep.Activate(BALLISTA, ApiType.DealDamage, ComboTarget.weakestOpponent(),
                                 p -> ballistaCounters(p) >= 2 && ballistaHasLifelink(p), false)),
-                Map.of(HELIOD, ComboTarget.ourCard(BALLISTA)), Map.of(), Map.of());
+                Map.of(HELIOD, ComboTarget.ourCard(BALLISTA)), Map.of(), Map.of(), ComboChoices.NONE);
     }
 
     /**
@@ -163,7 +168,7 @@ public final class ComboLibrary {
                                     && p.getManaPool().totalMana() < SCEPTER_ACTIVATION_MANA;
                         }),
                         new ComboStep.Activate(SCEPTER, ApiType.Play, null, scepterLive, true)),
-                Map.of(), Map.of(SCEPTER, REVERSAL), Map.of());
+                Map.of(), Map.of(SCEPTER, REVERSAL), Map.of(), ComboChoices.NONE);
     }
 
     /**
@@ -183,7 +188,7 @@ public final class ComboLibrary {
                                 p -> BreachLoop.of(p).canCastBrainFreeze(), false),
                         new ComboStep.Cast(LED, 0, null, p -> BreachLoop.of(p).canCastLed(), false),
                         new ComboStep.ManaAbility(LED, "U", p -> BreachLoop.of(p).ledOnBattlefield())),
-                Map.of(BRAIN_FREEZE, BreachLoop::target), Map.of(), Map.of());
+                Map.of(BRAIN_FREEZE, BreachLoop::target), Map.of(), Map.of(), ComboChoices.NONE);
     }
 
     private static Card ourPermanent(Player p, String name) {
@@ -246,7 +251,7 @@ public final class ComboLibrary {
                         new ComboStep.Activate(KNACKSAW, ApiType.Dig, ComboTarget.nextOpponentToDraw(),
                                 ComboLibrary::cliqueTapped, false),
                         new ComboStep.ManaAbility(KNACKSAW, "U", ComboLibrary::cliqueUntapped)),
-                Map.of(), Map.of(), Map.of());
+                Map.of(), Map.of(), Map.of(), ComboChoices.NONE);
     }
 
     /**
@@ -299,7 +304,7 @@ public final class ComboLibrary {
                         new ComboStep.ManaAbility(SHANG_CHI, "G",
                                 p -> untapped.test(p) && poolHas(p, MagicColor.BLUE) && !poolHas(p, MagicColor.GREEN)),
                         new ComboStep.ManaAbility(SHANG_CHI, "U", untapped)),
-                Map.of(), Map.of(), Map.of(DEADEYE, SHANG_CHI));
+                Map.of(), Map.of(), Map.of(DEADEYE, SHANG_CHI), ComboChoices.NONE);
     }
 
     /** The {T} mana ability of our creature {@code c} if it can tap now (summoning sickness and Shang-Chi checked), else null. */
@@ -350,7 +355,7 @@ public final class ComboLibrary {
                                 p -> p.getManaPool().getAmountOfColor(MagicColor.BLUE) < 2),   // flicker and dig
                         new ComboStep.TapForMana(Card::isCreature, "G", p -> true),
                         new ComboStep.Activate(GREAT_OAK, ApiType.ChangeZone, null, p -> true, false)),
-                Map.of(GREAT_OAK, ComboTarget.self()), Map.of(), Map.of(DEADEYE, GREAT_OAK));
+                Map.of(GREAT_OAK, ComboTarget.self()), Map.of(), Map.of(DEADEYE, GREAT_OAK), ComboChoices.NONE);
     }
 
     private static boolean inZone(Player p, ZoneType zone, String name) {
@@ -376,7 +381,7 @@ public final class ComboLibrary {
 
     /**
      * Thassa's Oracle reanimated onto an empty library by {@code r}: Entomb puts Oracle into our graveyard if it is
-     * still in the library (see {@link ComboPlanner#graveyardChoice}), Consultation naming a card not in the library
+     * still in the library (see {@link ComboPlanner#zoneChoice}), Consultation naming a card not in the library
      * (else Tainted Pact) exiles the library, then {@code r} returns Oracle. Each pending cast is guarded by its card
      * being in hand, so the affordability check prices the rest of the line: it never starts unless {@code r} is
      * still payable after the exile, which would otherwise deck us. Shallow Grave and Corpse Dance take the top
@@ -406,7 +411,29 @@ public final class ComboLibrary {
                         new ComboStep.Cast(TAINTED_PACT, 0, null, p -> inZone(p, ZoneType.Hand, TAINTED_PACT)
                                 && !inZone(p, ZoneType.Hand, CONSULTATION) && libraryLeft.test(p), true),
                         new ComboStep.Cast(r, 0, targetsOnCast ? oracle : null, p -> inZone(p, ZoneType.Hand, r), true)),
-                r.equals(NECROMANCY) ? Map.of(NECROMANCY, oracle) : Map.of(), Map.of(), Map.of());
+                r.equals(NECROMANCY) ? Map.of(NECROMANCY, oracle) : Map.of(), Map.of(), Map.of(), ComboChoices.NONE);
+    }
+
+    /**
+     * Inalla + Scholar of the Ages + Shallow Grave + an outlet (Burnt Offering, Sacrifice or Culling the Weak) +
+     * Entomb: the outlet sacrifices Scholar for mana, Shallow Grave returns it, and its enter trigger (plus the token
+     * copy's, if Inalla's {1} is paid) returns Shallow Grave, the outlet, Entomb and Consultation. Entomb finds Scholar,
+     * then Consultation, then Oracle; Consultation exiles the library and Shallow Grave returns Oracle.
+     * {@link ScholarLoop} holds the projection and the resolution-time choices; the Oracle-reanimate lines usually
+     * take over for the last three casts.
+     */
+    private static ComboLine scholarEntomb() {
+        List<ComboStep> steps = new ArrayList<>(List.of(
+                new ComboStep.Cast(SHALLOW_GRAVE, 0, null, p -> ScholarLoop.of(p).casts(SHALLOW_GRAVE), false),
+                new ComboStep.Cast(CONSULTATION, 0, null, p -> ScholarLoop.of(p).casts(CONSULTATION), false),
+                new ComboStep.Cast(ENTOMB, 0, null, p -> ScholarLoop.of(p).casts(ENTOMB), false)));
+        for (String outlet : ScholarLoop.OUTLETS) {
+            steps.add(new ComboStep.Cast(outlet, 0, null, p -> ScholarLoop.of(p).casts(outlet), false));
+        }
+        return new ComboLine("scholar-entomb",
+                List.of(ComboPiece.inCommandOrPlay(INALLA), ComboPiece.inLibraryOrGraveyard(ORACLE)),
+                p -> ScholarLoop.of(p).finishes(),
+                steps, Map.of(), Map.of(), Map.of(), ScholarLoop.CHOICES);
     }
 
     public static final List<ComboLine> ALL = allLines();
@@ -427,7 +454,8 @@ public final class ComboLibrary {
                 breachLedBrainFreeze(),
                 knacksawVitality(),
                 deadeyeShangChi(),
-                deadeyeGreatOak()));
+                deadeyeGreatOak(),
+                scholarEntomb()));
         return List.copyOf(lines);
     }
 

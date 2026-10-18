@@ -39,6 +39,11 @@ public record ComboPiece(String card, Set<ZoneType> zones) {
         return new ComboPiece(card, Set.of(ZoneType.Library, ZoneType.Graveyard));
     }
 
+    /** In our command zone or on the battlefield: a commander whose trigger works from either (Inalla's eminence). */
+    static ComboPiece inCommandOrPlay(String card) {
+        return new ComboPiece(card, Set.of(ZoneType.Command, ZoneType.Battlefield));
+    }
+
     /** Our copy of the piece in one of its zones, or null. */
     Card find(Player p) {
         for (ZoneType zone : zones) {

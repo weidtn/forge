@@ -38,6 +38,8 @@ public final class ComboPlanner {
     private int actionsThisTurn;
     /** The spell or ability {@link #nextStep()} last returned. */
     private SpellAbility lastPlayed;
+    /** The line of the step {@link #nextStep()} last returned (null for a tutor); reset each turn. */
+    private ComboLine activeLine;
 
     public ComboPlanner(Player ai) {
         this.ai = ai;
@@ -310,7 +312,7 @@ public final class ComboPlanner {
     }
 
     /** The missing piece among a tutor's search options, or null. */
-    public Card tutorTarget(CardCollectionView options) {
+    private Card tutorTarget(CardCollectionView options) {
         String missing = missingPiece();
         return missing == null ? null : findByName(options, missing);
     }
@@ -401,6 +403,7 @@ public final class ComboPlanner {
         if (turn != actionTurn) {
             actionTurn = turn;
             actionsThisTurn = 0;
+            activeLine = null;
         }
         if (actionsThisTurn >= MAX_ACTIONS_PER_TURN) {
             return null;
@@ -410,8 +413,14 @@ public final class ComboPlanner {
         if (sa != null) {
             actionsThisTurn++;
             lastPlayed = sa;
+            activeLine = line;
         }
         return sa;
+    }
+
+    /** The resolution-time choices of the line being played, else none. */
+    private ComboChoices choices() {
+        return activeLine == null ? ComboChoices.NONE : activeLine.choices();
     }
 
     /**
@@ -443,26 +452,64 @@ public final class ComboPlanner {
     }
 
     /**
-     * Planned target for one of our triggers (e.g. Heliod's counter onto Ballista) or for a copy of one of our spells
-     * (Brain Freeze's storm copies), or null to let the AI choose.
+     * Planned targets for one of our triggers (e.g. Heliod's counter onto Ballista; Scholar's two returns) or for a
+     * copy of one of our spells (Brain Freeze's storm copies), or null to let the AI choose: the active line's
+     * choice, else the first line's {@link ComboLine#triggerTargets()} entry for the host.
      */
-    public GameEntity triggerTarget(SpellAbility trigger) {
+    public List<GameEntity> triggerTargets(SpellAbility trigger) {
         SpellAbility sa = trigger instanceof WrappedAbility wrapped ? wrapped.getWrappedAbility() : trigger;
         if (sa.getHostCard() == null || !sa.usesTargeting()) {
             return null;
+        }
+        List<GameEntity> chosen = choices().triggerTargets(ai, sa);
+        if (chosen != null) {
+            return chosen;
         }
         for (ComboLine line : ComboLibrary.ALL) {
             ComboTarget planned = line.triggerTargets().get(sa.getHostCard().getName());
             GameEntity target = planned == null ? null : planned.pick(ai);
             if (target != null && sa.canTarget(target)) {
-                return target;
+                return List.of(target);
             }
         }
         return null;
     }
 
+    /**
+     * The card {@code sa} moves from a hidden zone (library, hand) to {@code destination}, or null to let the AI
+     * choose: the active line's choice (the Scholar loop's Entomb), else the piece a tutor completes a line with,
+     * the card a permanent imprints, or the win card Entomb buries.
+     */
+    public Card zoneChoice(SpellAbility sa, ZoneType destination, CardCollectionView options) {
+        Card chosen = choices().hiddenZoneChoice(ai, sa, destination, options);
+        if (chosen != null) {
+            return chosen;
+        }
+        return switch (destination) {
+            case Hand, Library -> tutorTarget(options);
+            case Exile -> exileChoice(sa, options);
+            case Graveyard -> graveyardChoice(sa, options);
+            default -> null;
+        };
+    }
+
+    /** The creature the active line's sacrifice cost takes from {@code options} (the nontoken Scholar), or null. */
+    public Card sacrificeChoice(SpellAbility sa, CardCollectionView options) {
+        return choices().sacrifice(ai, sa, options);
+    }
+
+    /** Whether to pay our optional trigger's cost for the active line (Inalla's {1}), or null to let the AI decide. */
+    public Boolean payOptionalTrigger(WrappedAbility trigger) {
+        return choices().payOptionalTrigger(ai, trigger);
+    }
+
+    /** The one colour of the active line's combination mana (Burnt Offering's black), or null to let the AI choose. */
+    public Byte comboManaColor(SpellAbility sa) {
+        return choices().comboManaColor(ai, sa);
+    }
+
     /** The card one of our permanents should exile from {@code options} (Scepter imprints Reversal), or null. */
-    public Card exileChoice(SpellAbility sa, CardCollectionView options) {
+    private Card exileChoice(SpellAbility sa, CardCollectionView options) {
         Card host = sa.getHostCard();
         if (host == null) {
             return null;
@@ -496,7 +543,7 @@ public final class ComboPlanner {
      * The card our line spell puts into our graveyard from {@code options}: the line's win card (Entomb buries Oracle
      * for a reanimation line), or null to let the AI choose.
      */
-    public Card graveyardChoice(SpellAbility sa, CardCollectionView options) {
+    private Card graveyardChoice(SpellAbility sa, CardCollectionView options) {
         Card host = sa.getHostCard();
         ComboLine line = host == null ? null : assembledLineCasting(host.getName());
         return line == null ? null : findByName(options, line.winCard());

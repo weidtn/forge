@@ -233,6 +233,11 @@ public class PlayerControllerAi extends PlayerController {
     @Override
     public Map<Byte, Integer> specifyManaCombo(SpellAbility sa, ColorSet colorSet, int manaAmount, boolean different) {
         Map<Byte, Integer> result = new HashMap<>();
+        Byte planned = brains.comboPlannerEnabled() && !different ? brains.getComboPlanner().comboManaColor(sa) : null;
+        if (planned != null && colorSet.hasAnyColor(planned)) {
+            result.put(planned, manaAmount); // e.g. Burnt Offering makes only {B}: the Scholar loop's spells are black
+            return result;
+        }
         for (int i = 0; i < manaAmount; ++i) {
             Byte chosen = chooseColor("", sa, colorSet);
             result.merge(chosen, 1, Integer::sum);
@@ -425,6 +430,12 @@ public class PlayerControllerAi extends PlayerController {
         //final Trigger regtrig = wrapper.getTrigger();
         if (wrapper.isMandatory()) {
             return true;
+        }
+        if (brains.comboPlannerEnabled()) {
+            Boolean planned = brains.getComboPlanner().payOptionalTrigger(wrapper);
+            if (planned != null) {
+                return planned; // e.g. Inalla's {1} only while the Scholar loop's next step stays payable
+            }
         }
         // Store/replace target choices more properly to get this SA cleared.
         TargetChoices tc = null;
@@ -1373,9 +1384,11 @@ public class PlayerControllerAi extends PlayerController {
             // choosing new targets is optional for a copy of our own spell
             Card original = copy.getHostCard().getCopiedPermanent();
             boolean ownSpell = (original != null ? original : copy.getHostCard()).getController().equals(player);
-            GameEntity planned = brains.comboPlannerEnabled() ? brains.getComboPlanner().triggerTarget(copy) : null;
+            List<GameEntity> planned = brains.comboPlannerEnabled() ? brains.getComboPlanner().triggerTargets(copy) : null;
             if (planned != null) {
-                copy.getTargets().add(planned); // e.g. a Brain Freeze storm copy: self-mill for escape fuel, else an opponent
+                for (GameEntity target : planned) {
+                    copy.getTargets().add(target); // e.g. a Brain Freeze storm copy: self-mill for escape fuel, else an opponent
+                }
                 chosen = true;
             } else {
                 chosen = brains.doTrigger(copy, !ownSpell);
@@ -1410,11 +1423,13 @@ public class PlayerControllerAi extends PlayerController {
             return targetingPlayer.getController().chooseTargetsFor(sa);
         }
         if (brains.comboPlannerEnabled()) {
-            GameEntity planned = brains.getComboPlanner().triggerTarget(sa);
+            List<GameEntity> planned = brains.getComboPlanner().triggerTargets(sa);
             if (planned != null) {
                 sa.resetTargets();
-                sa.getTargets().add(planned);
-                return true; // the target that keeps a combo line going
+                for (GameEntity target : planned) {
+                    sa.getTargets().add(target);
+                }
+                return true; // the targets that keep a combo line going
             }
         }
         return brains.doTrigger(sa, isMandatory);
@@ -1631,14 +1646,8 @@ public class PlayerControllerAi extends PlayerController {
             reveal(delayedReveal);
         }
         if (brains.comboPlannerEnabled() && sa.getApi() == ApiType.ChangeZone) {
-            Card planned = null;
-            if (destination == ZoneType.Hand || destination == ZoneType.Library) {
-                planned = brains.getComboPlanner().tutorTarget(fetchList); // the card that completes a combo line
-            } else if (destination == ZoneType.Exile) {
-                planned = brains.getComboPlanner().exileChoice(sa, fetchList); // e.g. Scepter imprints Reversal
-            } else if (destination == ZoneType.Graveyard) {
-                planned = brains.getComboPlanner().graveyardChoice(sa, fetchList); // e.g. Entomb buries Oracle
-            }
+            // e.g. a tutor fetches a line's missing piece, Scepter imprints Reversal, Entomb buries Oracle or Scholar
+            Card planned = brains.getComboPlanner().zoneChoice(sa, destination, fetchList);
             if (planned != null) {
                 return planned;
             }

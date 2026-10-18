@@ -18,6 +18,7 @@ import forge.game.Match;
 import forge.game.ability.AbilityKey;
 import forge.game.ability.ApiType;
 import forge.game.card.Card;
+import forge.game.card.CardLists;
 import forge.game.card.CounterEnumType;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
@@ -190,6 +191,94 @@ public class ComboPlannerTest extends AITest {
 
         AssertJUnit.assertNotNull(sa);
         AssertJUnit.assertEquals("Entomb", sa.getHostCard().getName());
+    }
+
+    /**
+     * Inalla in the command zone; Entomb, Shallow Grave and Burnt Offering in hand; Intuition (mana value 3, the stock
+     * pick for Scholar's trigger) in the graveyard; Scholar, Oracle, Consultation and Hoarding Broodlord (mana value 8,
+     * the stock Entomb choice) under the bears; {@code swamps} Swamps and one Wastes.
+     */
+    private void setupScholarLoop(Player p, int swamps) {
+        addCardToZone("Inalla, Archmage Ritualist", p, ZoneType.Command);
+        for (String name : List.of("Scholar of the Ages", ComboLibrary.ORACLE, ComboLibrary.CONSULTATION,
+                "Hoarding Broodlord")) {
+            addCardToZone(name, p, ZoneType.Library);
+        }
+        addCardToZone("Intuition", p, ZoneType.Graveyard);
+        addCards("Swamp", swamps, p);
+        addCard("Wastes", p);
+        addCardToZone("Entomb", p, ZoneType.Hand);
+        addCardToZone("Shallow Grave", p, ZoneType.Hand);
+        addCardToZone("Burnt Offering", p, ZoneType.Hand);
+    }
+
+    @Test
+    public void scholarLoopFindsConsultationAndWins() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        setupScholarLoop(p, 3);             // {B}{B}{B}{1}: Inalla's first {1} would leave nothing for Burnt Offering
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 1000);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+        AssertJUnit.assertEquals("Scholar's triggers never took the decoy", 1,
+                countCardsWithName(game, "Intuition", ZoneType.Graveyard));
+    }
+
+    @Test
+    public void scholarLoopSacrificesTheNontokenScholar() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        setupScholarLoop(p, 4);             // a spare {B}: Inalla's first token is paid, and Consultation is still to find
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 1000);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+    }
+
+    @Test
+    public void nothingWhenScholarLoopCannotReachTheKill() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        setupScholarLoop(p, 2);             // Entomb and Shallow Grave leave nothing for Burnt Offering
+
+        AssertJUnit.assertNull(planner(p).nextStep());
+    }
+
+    @Test
+    public void scholarTriggersSplitTheirTargets() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone("Inalla, Archmage Ritualist", p, ZoneType.Command);
+        addCards("Swamp", 4, p);            // with 3, Inalla's {1} would leave nothing for Burnt Offering: no token
+        for (String name : List.of("Burnt Offering", "Entomb", ComboLibrary.CONSULTATION, "Intuition",
+                "Scholar of the Ages")) {
+            addCardToZone(name, p, ZoneType.Graveyard);   // Scholar is the top creature card
+        }
+        addCardToZone("Shallow Grave", p, ZoneType.Hand);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
+
+        SpellAbility first = planner(p).nextStep();
+        AssertJUnit.assertNotNull(first);
+        AssertJUnit.assertEquals("Shallow Grave", first.getHostCard().getName());
+
+        for (int i = 0; i < 200 && countCardsWithName(game, "Scholar of the Ages", ZoneType.Battlefield) == 0; i++) {
+            game.getPhaseHandler().mainLoopStep();
+        }
+        playUntilStackClear(game);          // eminence, then the token's trigger, then the original's
+
+        for (String name : List.of("Shallow Grave", "Burnt Offering", "Entomb", ComboLibrary.CONSULTATION)) {
+            AssertJUnit.assertEquals(name + " returned", 1, countCardsWithName(game, name, ZoneType.Hand));
+        }
+        AssertJUnit.assertEquals("decoy stays", 1, countCardsWithName(game, "Intuition", ZoneType.Graveyard));
+        AssertJUnit.assertEquals("Inalla's {1} paid", 1, CardLists.count(p.getCardsIn(ZoneType.Battlefield),
+                c -> c.isToken() && c.getName().equals("Scholar of the Ages")));
     }
 
     @Test

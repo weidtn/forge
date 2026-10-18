@@ -519,8 +519,23 @@ public class AiCostDecision extends CostDecisionMakerBase {
         int c = cost.getAbilityAmount(ability);
 
         final AiController aic = ((PlayerControllerAi)player.getController()).getAi();
+        Card planned = c == 1 ? comboSacrifice(cost, aic) : null;
+        if (planned != null) {
+            return PaymentDecision.card(planned);
+        }
         CardCollectionView list = aic.chooseSacrificeType(cost.getType(), ability, isEffect(), c, null);
         return list == null ? null : PaymentDecision.card(list);
+    }
+
+    /** cEDH planner: a line's outlet sacrifices the creature the line returns (the nontoken Scholar; stock: the token). */
+    private Card comboSacrifice(CostSacrifice cost, AiController aic) {
+        if (!aic.comboPlannerEnabled()) {
+            return null;
+        }
+        CardCollection valid = CardLists.getValidCards(player.getCardsIn(ZoneType.Battlefield), cost.getType().split(";"),
+                player, source, ability);
+        valid = CardLists.filter(valid, CardPredicates.canBeSacrificedBy(ability, isEffect()));
+        return aic.getComboPlanner().sacrificeChoice(ability, valid);
     }
 
     @Override
