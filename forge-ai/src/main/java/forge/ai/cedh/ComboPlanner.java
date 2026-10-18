@@ -655,13 +655,23 @@ public final class ComboPlanner {
                 && assembledLineCasting(ComboLibrary.TAINTED_PACT) != null;
     }
 
-    /** Opening-hand check: keep iff the hand has a combo piece or tutor, and at least two mana sources. */
+    /**
+     * Opening-hand check: keep iff the hand has a combo piece or tutor, and at least two mana sources. A card counts as
+     * a piece if it is a line's win card, or if every piece of that line is in our deck (hand, library, command zone):
+     * a loop rock like Sol Ring is not a reason to keep without the rest of its line.
+     */
     public boolean keepHand() {
+        List<String> deck = new ArrayList<>();
+        for (Card c : ai.getCardsIn(List.of(ZoneType.Hand, ZoneType.Library, ZoneType.Command))) {
+            deck.add(c.getName());
+        }
         boolean hasPiece = false;
         int sources = 0;
         for (Card c : ai.getCardsIn(ZoneType.Hand)) {
             String name = c.getName();
-            if (ComboLibrary.TUTORS.containsKey(name) || ComboLibrary.ALL.stream().anyMatch(l -> l.pieces().stream().anyMatch(pc -> pc.card().equals(name)))) {
+            if (ComboLibrary.TUTORS.containsKey(name) || ComboLibrary.ALL.stream().anyMatch(l -> name.equals(l.winCard())
+                    || l.pieces().stream().anyMatch(pc -> pc.card().equals(name))
+                    && l.pieces().stream().allMatch(pc -> deck.contains(pc.card())))) {
                 hasPiece = true;
             }
             if (c.isLand() || !c.getManaAbilities().isEmpty()) {

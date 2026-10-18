@@ -744,4 +744,21 @@ public class ComboPlannerTest extends AITest {
         }
         AssertJUnit.assertFalse(planner(p).keepHand());
     }
+
+    /** Sol Ring is a Kitten + Teferi loop piece, but without Kitten and Teferi in the deck it is just a rock. */
+    @Test
+    public void mulligansLoopRockWithoutItsLine() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone("Sol Ring", p, ZoneType.Hand);
+        addCardToZone("Island", p, ZoneType.Hand);
+        for (int i = 0; i < 5; i++) {
+            addCardToZone("Runeclaw Bear", p, ZoneType.Hand);
+        }
+        AssertJUnit.assertFalse(planner(p).keepHand());
+        addCardToZone(ComboLibrary.KITTEN, p, ZoneType.Library);
+        addCardToZone(ComboLibrary.TEFERI, p, ZoneType.Library);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
+        AssertJUnit.assertTrue(planner(p).keepHand());
+    }
 }
