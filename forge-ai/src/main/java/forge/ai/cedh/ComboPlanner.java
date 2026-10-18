@@ -210,25 +210,41 @@ public final class ComboPlanner {
         return result;
     }
 
-    private ManaCost totalCost(List<SpellAbility> spells) {
+    private static ManaCost totalCost(Player p, List<SpellAbility> spells) {
         ManaCost total = ManaCost.ZERO;
         for (SpellAbility sa : spells) {
-            ManaCostBeingPaid cost = ComputerUtilMana.calculateManaCost(sa.getPayCosts(), sa, ai, true, 0, false);
+            ManaCostBeingPaid cost = ComputerUtilMana.calculateManaCost(sa.getPayCosts(), sa, p, true, 0, false);
             total = ManaCost.combine(total, cost.toManaCost());
         }
         return total;
     }
 
-    /** True if our current sources can pay for all these spells together (colours included). Taps nothing. */
-    boolean canPayCombined(List<SpellAbility> spells) {
+    /** True if {@code p}'s current sources can pay for all these spells together (colours included). Taps nothing. */
+    static boolean canPayCombined(Player p, List<SpellAbility> spells) {
         if (spells.isEmpty()) {
             return true;
         }
-        ManaCost total = totalCost(spells);
-        if (ComputerUtilMana.getAvailableManaEstimate(ai, false) < total.getCMC()) {
+        ManaCost total = totalCost(p, spells);
+        if (ComputerUtilMana.getAvailableManaEstimate(p, false) < total.getCMC()) {
             return false; // cheap early-out before the shard-by-shard check
         }
-        return ComputerUtilMana.canPayManaCost(new ManaCostBeingPaid(total), spells.get(0), ai, false);
+        return ComputerUtilMana.canPayManaCost(new ManaCostBeingPaid(total), spells.get(0), p, false);
+    }
+
+    /**
+     * As {@link #canPayCombined}, but without the mana of our permanent {@code excluded} (null: every source counts),
+     * which is held back from the payer for the check only.
+     */
+    static boolean canPayCombinedWithout(Player p, List<SpellAbility> spells, Card excluded) {
+        if (excluded == null || AiCardMemory.isRememberedCard(p, excluded, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL)) {
+            return canPayCombined(p, spells);
+        }
+        AiCardMemory.rememberCard(p, excluded, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
+        try {
+            return canPayCombined(p, spells);
+        } finally {
+            AiCardMemory.forgetCard(p, excluded, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
+        }
     }
 
     /**
@@ -241,7 +257,7 @@ public final class ComboPlanner {
             return ComputerUtilMana.canPayManaCost(now, ai, 0, false);
         }
         CardCollection held = ComputerUtilMana.getManaSourcesToPayCost(
-                new ManaCostBeingPaid(totalCost(later)), later.get(0), ai, false);
+                new ManaCostBeingPaid(totalCost(ai, later)), later.get(0), ai, false);
         if (held == null) {
             return false;
         }
@@ -268,7 +284,7 @@ public final class ComboPlanner {
             return false;
         }
         List<SpellAbility> setup = setupAbilities(line, null);
-        return setup != null && canPayCombined(setup);
+        return setup != null && canPayCombined(ai, setup);
     }
 
     public ComboLine findExecutableLine() {
@@ -348,7 +364,7 @@ public final class ComboPlanner {
                 List<SpellAbility> all = new ArrayList<>();
                 all.add(sa);
                 all.addAll(lineSpells);
-                if (canPayCombined(all) && holdManaFor(lineSpells, sa)) {
+                if (canPayCombined(ai, all) && holdManaFor(lineSpells, sa)) {
                     return sa;
                 }
             } else if (toTop == null && !alreadyOnTop) {
@@ -452,9 +468,10 @@ public final class ComboPlanner {
     }
 
     /**
-     * Planned targets for one of our triggers (e.g. Heliod's counter onto Ballista; Scholar's two returns) or for a
-     * copy of one of our spells (Brain Freeze's storm copies), or null to let the AI choose: the active line's
-     * choice, else the first line's {@link ComboLine#triggerTargets()} entry for the host.
+     * Planned targets for one of our triggers (e.g. Heliod's counter onto Ballista; Scholar's two returns; Kitten's
+     * flicker onto Teferi) or for a copy of one of our spells (Brain Freeze's storm copies), or null to let the AI
+     * choose: the active line's choice, else the host's {@link ComboLine#triggerTargets()} entry in the active line,
+     * else in the first line that has a legal one.
      */
     public List<GameEntity> triggerTargets(SpellAbility trigger) {
         SpellAbility sa = trigger instanceof WrappedAbility wrapped ? wrapped.getWrappedAbility() : trigger;
@@ -465,14 +482,18 @@ public final class ComboPlanner {
         if (chosen != null) {
             return chosen;
         }
-        for (ComboLine line : ComboLibrary.ALL) {
-            ComboTarget planned = line.triggerTargets().get(sa.getHostCard().getName());
-            GameEntity target = planned == null ? null : planned.pick(ai);
-            if (target != null && sa.canTarget(target)) {
-                return List.of(target);
-            }
+        GameEntity target = activeLine == null ? null : mappedTarget(activeLine, sa);
+        for (int i = 0; target == null && i < ComboLibrary.ALL.size(); i++) {
+            target = mappedTarget(ComboLibrary.ALL.get(i), sa);
         }
-        return null;
+        return target == null ? null : List.of(target);
+    }
+
+    /** The legal target {@code line}'s {@link ComboLine#triggerTargets()} entry gives {@code sa}'s host, or null. */
+    private GameEntity mappedTarget(ComboLine line, SpellAbility sa) {
+        ComboTarget planned = line.triggerTargets().get(sa.getHostCard().getName());
+        GameEntity target = planned == null ? null : planned.pick(ai);
+        return target != null && sa.canTarget(target) ? target : null;
     }
 
     /**

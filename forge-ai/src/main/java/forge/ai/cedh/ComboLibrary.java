@@ -49,6 +49,17 @@ public final class ComboLibrary {
     public static final String BURNT_OFFERING = "Burnt Offering";
     public static final String SACRIFICE = "Sacrifice";
     public static final String CULLING = "Culling the Weak";
+    public static final String KITTEN = "Displacer Kitten";
+    public static final String TEFERI = "Teferi, Time Raveler";
+    private static final String VEXING_BAUBLE = "Vexing Bauble";
+
+    /**
+     * Rocks for the Kitten-Teferi loop, most mana per recast first: each makes at least its cost, so the loop never
+     * runs out of mana. Lotus Petal is never tapped (its sacrifice isn't a {T}-only cost), so it survives every bounce
+     * and loops for free. Left out: Chrome Mox and Mox Diamond (each recast costs a card), Signets, Talismans and
+     * Fellwar Stone (make less than they cost).
+     */
+    static final List<String> LOOP_ROCKS = List.of("Mana Vault", "Sol Ring", "Grim Monolith", "Mox Opal", "Lotus Petal");
 
     /** Spells of the Oracle-reanimate lines, cheapest first (Unearth before Reanimate: same mana, no life). */
     static final List<String> REANIMATORS = List.of(UNEARTH, REANIMATE, SHALLOW_GRAVE, PERSIST, NECROMANCY, CORPSE_DANCE);
@@ -414,6 +425,96 @@ public final class ComboLibrary {
                 r.equals(NECROMANCY) ? Map.of(NECROMANCY, oracle) : Map.of(), Map.of(), Map.of(), ComboChoices.NONE);
     }
 
+    /** Teferi, Time Raveler on our battlefield can still use its -3: at least 3 loyalty, no loyalty ability used yet. */
+    static boolean teferiCanMinus3(Player p) {
+        Card teferi = ourPermanent(p, TEFERI);
+        return teferi != null && teferi.getCounters(CounterEnumType.LOYALTY) >= 3
+                && teferi.getPlaneswalkerAbilityActivated() == 0;
+    }
+
+    /** Our copy of {@code name} in hand, else in our library, else null. */
+    private static Card inHandOrLibrary(Player p, String name) {
+        Card c = ComboPlanner.findByName(p.getCardsIn(ZoneType.Hand), name);
+        return c != null ? c : ComboPlanner.findByName(p.getCardsIn(ZoneType.Library), name);
+    }
+
+    /**
+     * The Kitten-Teferi loop can pay its kill: Oracle, plus Consultation (else Tainted Pact) if one is in hand or
+     * library, plus Kitten, Teferi and the rock still to be cast, priced from their cards and paid by sources other
+     * than the rock on the battlefield. Untapped there, the rock pays for its own recasts (it makes at least its cost),
+     * so once this holds it keeps holding through every iteration: the rock's mana only ever adds to what's left.
+     */
+    static boolean finisherPayable(Player p, String rock) {
+        List<Card> casts = new ArrayList<>();
+        casts.add(inHandOrLibrary(p, ORACLE));
+        Card exiler = inHandOrLibrary(p, CONSULTATION);
+        if (exiler == null) {
+            exiler = inHandOrLibrary(p, TAINTED_PACT);
+        }
+        if (exiler != null) {
+            casts.add(exiler);
+        }
+        for (String name : List.of(KITTEN, TEFERI, rock)) {
+            Card c = ComboPlanner.findByName(p.getCardsIn(ZoneType.Hand), name);
+            if (c != null) {
+                casts.add(c);
+            }
+        }
+        Card onBattlefield = ourPermanent(p, rock);
+        if (onBattlefield != null && onBattlefield.isTapped()) {
+            casts.add(onBattlefield);   // bounced and recast without its own mana first
+        }
+        List<SpellAbility> spells = new ArrayList<>();
+        for (Card c : casts) {
+            for (SpellAbility sa : c.getSpellAbilities()) {
+                if (sa.isSpell()) {
+                    sa.setActivatingPlayer(p);
+                    spells.add(sa);
+                    break;
+                }
+            }
+        }
+        return ComboPlanner.canPayCombinedWithout(p, spells, onBattlefield);
+    }
+
+    /**
+     * Our copy of {@code rock} (null while it's still to be tutored) isn't a free spell, or no Vexing Bauble on any
+     * battlefield counters free spells.
+     */
+    private static boolean baubleSafe(Player p, Card rock) {
+        return rock == null || rock.getCMC() > 0
+                || ComboPlanner.findByName(p.getGame().getCardsIn(ZoneType.Battlefield), VEXING_BAUBLE) == null;
+    }
+
+    /**
+     * Displacer Kitten + Teferi, Time Raveler + a {@link #LOOP_ROCKS} rock: tap the rock, Teferi's -3 returns it to
+     * hand and draws a card, and recasting it (a noncreature spell) makes Kitten flicker Teferi, which comes back as a
+     * new object with fresh loyalty and a fresh activation. Every iteration draws and costs no mana; the Thoracle lines
+     * come first in {@link #ALL}, so they take over as soon as Oracle and Consultation (or Pact) are in hand, or the
+     * library is down to Oracle's devotion. The loop only draws while the library has more than 2 cards or still holds
+     * Oracle, so it never decks us. Kitten flickers Teferi only once its -3 is spent: a fresh Teferi gains nothing, so
+     * the stock target (Tivit, for its vote) stays.
+     */
+    private static ComboLine kittenTeferi(String rock) {
+        ComboPiece rockPiece = ComboPiece.inHandOrPlay(rock);
+        Predicate<Player> rockInHand = p -> inZone(p, ZoneType.Hand, rock);
+        ComboTarget teferi = ComboTarget.ourCard(TEFERI);
+        return new ComboLine("kitten-teferi-" + rock.toLowerCase().replace(' ', '-'),
+                List.of(ComboPiece.inHandOrPlay(KITTEN), ComboPiece.inHandOrPlay(TEFERI), rockPiece,
+                        ComboPiece.inLibraryOrHand(ORACLE)),
+                p -> p.canCastSorcery() && (!libraryAtMost(p, 2) || inZone(p, ZoneType.Library, ORACLE))
+                        && (teferiCanMinus3(p) || inZone(p, ZoneType.Hand, TEFERI) || rockInHand.test(p))
+                        && baubleSafe(p, rockPiece.find(p)) && finisherPayable(p, rock),
+                List.of(ComboStep.Cast.fromHand(KITTEN),
+                        ComboStep.Cast.fromHand(TEFERI),
+                        new ComboStep.TapForMana(c -> c.getName().equals(rock), null, ComboLibrary::teferiCanMinus3),
+                        new ComboStep.Activate(TEFERI, ApiType.ChangeZone, ComboTarget.ourCard(rock),
+                                p -> teferiCanMinus3(p) && inZone(p, ZoneType.Battlefield, rock), false),
+                        new ComboStep.Cast(rock, 0, null, rockInHand, true)),
+                Map.of(KITTEN, p -> teferiCanMinus3(p) ? null : teferi.pick(p)), Map.of(), Map.of(),
+                ComboChoices.NONE);
+    }
+
     /**
      * Inalla + Scholar of the Ages + Shallow Grave + an outlet (Burnt Offering, Sacrifice or Culling the Weak) +
      * Entomb: the outlet sacrifices Scholar for mana, Shallow Grave returns it, and its enter trigger (plus the token
@@ -456,6 +557,9 @@ public final class ComboLibrary {
                 deadeyeShangChi(),
                 deadeyeGreatOak(),
                 scholarEntomb()));
+        for (String rock : LOOP_ROCKS) {
+            lines.add(kittenTeferi(rock));
+        }
         return List.copyOf(lines);
     }
 

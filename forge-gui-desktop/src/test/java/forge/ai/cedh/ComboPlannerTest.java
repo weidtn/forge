@@ -649,6 +649,77 @@ public class ComboPlannerTest extends AITest {
     }
 
     @Test
+    public void kittenFlickersTeferiForAnotherMinusThree() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
+        addCards("Island", 2, p);
+        addCard("Swamp", p);
+        Card tivit = addCard("Tivit, Seller of Secrets", p);   // has an enter trigger: the stock flicker target
+        addCard("Displacer Kitten", p);
+        Card teferi = addCard("Teferi, Time Raveler", p);
+        teferi.setCounters(CounterEnumType.LOYALTY, 1);         // spent: only a flicker gives it another -3
+        addCardToZone("Sol Ring", p, ZoneType.Hand);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility first = planner(p).nextStep();
+        AssertJUnit.assertNotNull(first);
+        AssertJUnit.assertEquals("Sol Ring", first.getHostCard().getName());
+
+        for (int i = 0; i < 200 && findCardWithName(game, "Teferi, Time Raveler") == teferi; i++) {
+            game.getPhaseHandler().mainLoopStep();
+        }
+
+        Card flickered = findCardWithName(game, "Teferi, Time Raveler");
+        AssertJUnit.assertNotNull(flickered);
+        AssertJUnit.assertNotSame("Kitten flickered Teferi", teferi, flickered);
+        AssertJUnit.assertEquals("fresh loyalty", 4, flickered.getCounters(CounterEnumType.LOYALTY));
+        AssertJUnit.assertEquals("fresh activation", 0, flickered.getPlaneswalkerAbilityActivated());
+        AssertJUnit.assertSame("Tivit not flickered", tivit, findCardWithName(game, "Tivit, Seller of Secrets"));
+        AssertJUnit.assertEquals("no vote tokens", 0, CardLists.count(p.getCardsIn(ZoneType.Battlefield), Card::isToken));
+    }
+
+    /**
+     * Displacer Kitten, Teferi and Sol Ring on the battlefield, two Islands and a Swamp; Oracle in {@code oracleZone},
+     * then 10 bears and Consultation under the 20 bears.
+     */
+    private void setupKittenTeferi(Player p, ZoneType oracleZone) {
+        addCardToZone(ComboLibrary.ORACLE, p, oracleZone);
+        fillLibrary(p, 10);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Library);
+        addCards("Island", 2, p);
+        addCard("Swamp", p);
+        addCard("Displacer Kitten", p);
+        // addCard skips the enter-with-loyalty replacement
+        addCard("Teferi, Time Raveler", p).setCounters(CounterEnumType.LOYALTY, 4);
+        addCard("Sol Ring", p);
+        p.getGame().getAction().checkStateEffects(true);
+    }
+
+    @Test
+    public void kittenTeferiDrawsIntoOracleAndWins() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        setupKittenTeferi(p, ZoneType.Library);   // Oracle is the 21st card
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 5000);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+    }
+
+    @Test
+    public void nothingWhenOracleIsGone() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        setupKittenTeferi(p, ZoneType.Exile);
+
+        AssertJUnit.assertNull(planner(p).nextStep());
+    }
+
+    @Test
     public void keepsHandWithPieceAndTwoLands() {
         Game game = initAndCreateGame();
         Player p = setup(game);

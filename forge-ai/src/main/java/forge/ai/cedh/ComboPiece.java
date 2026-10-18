@@ -39,6 +39,11 @@ public record ComboPiece(String card, Set<ZoneType> zones) {
         return new ComboPiece(card, Set.of(ZoneType.Library, ZoneType.Graveyard));
     }
 
+    /** In our library (a draw loop digs for it) or already in hand: Oracle for the Kitten-Teferi line. */
+    static ComboPiece inLibraryOrHand(String card) {
+        return new ComboPiece(card, Set.of(ZoneType.Library, ZoneType.Hand));
+    }
+
     /** In our command zone or on the battlefield: a commander whose trigger works from either (Inalla's eminence). */
     static ComboPiece inCommandOrPlay(String card) {
         return new ComboPiece(card, Set.of(ZoneType.Command, ZoneType.Battlefield));
