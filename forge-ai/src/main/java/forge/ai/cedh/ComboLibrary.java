@@ -12,6 +12,7 @@ import forge.game.card.CardCollectionView;
 import forge.game.card.CounterEnumType;
 import forge.game.keyword.Keyword;
 import forge.game.player.Player;
+import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 
 public final class ComboLibrary {
@@ -22,6 +23,14 @@ public final class ComboLibrary {
     public static final String TAINTED_PACT = "Tainted Pact";
     public static final String HELIOD = "Heliod, Sun-Crowned";
     public static final String BALLISTA = "Walking Ballista";
+    public static final String SCEPTER = "Isochron Scepter";
+    public static final String REVERSAL = "Dramatic Reversal";
+    public static final String AETHERFLUX = "Aetherflux Reservoir";
+
+    /** Scepter's activation is {2}, {T}. */
+    private static final int SCEPTER_ACTIVATION_MANA = 2;
+    /** Aetherflux's shot costs 50 life; paying it at exactly 50 would kill us. */
+    private static final int AETHERFLUX_LIFE = 50;
 
     /** Oracle alone has devotion 2, so a library of <= 2 cards is a guaranteed win. */
     static boolean libraryAtMost(Player p, int n) {
@@ -70,14 +79,69 @@ public final class ComboLibrary {
                                 p -> !ballistaHasLifelink(p), true),
                         new ComboStep.Activate(BALLISTA, ApiType.DealDamage, ComboTarget.weakestOpponent(),
                                 p -> ballistaCounters(p) >= 2 && ballistaHasLifelink(p), false)),
-                Map.of(HELIOD, ComboTarget.ourCard(BALLISTA)));
+                Map.of(HELIOD, ComboTarget.ourCard(BALLISTA)), Map.of());
+    }
+
+    /**
+     * Mana our nonland permanents make per untap: what Dramatic Reversal gives back. Lands aren't untapped by it, and
+     * summoning-sick dorks can't tap again, so neither counts.
+     */
+    static int nonlandManaPerUntap(Player p) {
+        int total = 0;
+        for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+            if (c.isLand() || c.isSick()) {
+                continue;
+            }
+            SpellAbility mana = ComboPlanner.tapManaAbility(c, p);
+            total += mana == null ? 0 : mana.amountOfManaGenerated(true);
+        }
+        return total;
+    }
+
+    /** Our Scepter on the battlefield with Dramatic Reversal imprinted, or null. */
+    private static Card scepterWithReversal(Player p) {
+        for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+            if (c.getName().equals(SCEPTER) && c.getImprintedCards().anyMatch(i -> i.getName().equals(REVERSAL))) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    static boolean scepterHasReversal(Player p) {
+        return scepterWithReversal(p) != null;
+    }
+
+    /**
+     * Isochron Scepter + Dramatic Reversal, Aetherflux Reservoir as the outlet: each Scepter activation casts a
+     * Reversal copy (Aetherflux gains life for it) and untaps the rocks that pay the next activation. The shot comes
+     * first, so the loop stops the moment life passes 50. Reversal in hand only works if Scepter is too (to imprint it).
+     */
+    private static ComboLine scepterReversal() {
+        ComboPiece scepterInHand = ComboPiece.inHand(SCEPTER);
+        Predicate<Player> scepterLive = p -> scepterHasReversal(p) || scepterInHand.find(p) != null;
+        return new ComboLine("scepter-reversal-aetherflux",
+                List.of(ComboPiece.inHandOrPlay(SCEPTER), ComboPiece.imprintable(REVERSAL),
+                        ComboPiece.onBattlefield(AETHERFLUX)),
+                p -> scepterLive.test(p) && nonlandManaPerUntap(p) >= SCEPTER_ACTIVATION_MANA,
+                List.of(ComboStep.Cast.fromHand(SCEPTER),
+                        new ComboStep.Activate(AETHERFLUX, ApiType.DealDamage, ComboTarget.weakestOpponent(),
+                                p -> p.getLife() > AETHERFLUX_LIFE, false),
+                        new ComboStep.TapForMana(c -> !c.isLand(), p -> {
+                            Card scepter = scepterWithReversal(p);
+                            return scepter != null && scepter.isUntapped()
+                                    && p.getManaPool().totalMana() < SCEPTER_ACTIVATION_MANA;
+                        }),
+                        new ComboStep.Activate(SCEPTER, ApiType.Play, null, scepterLive, true)),
+                Map.of(), Map.of(SCEPTER, REVERSAL));
     }
 
     public static final List<ComboLine> ALL = List.of(
             ComboLine.castInOrder("thoracle-finish", List.of(ORACLE), p -> libraryAtMost(p, 2)),
             ComboLine.castInOrder("thoracle-consult", List.of(CONSULTATION, ORACLE), p -> true),
             ComboLine.castInOrder("thoracle-pact", List.of(TAINTED_PACT, ORACLE), ComboLibrary::libraryHasNoDuplicateNames),
-            heliodBallista()
+            heliodBallista(),
+            scepterReversal()
     );
 
     /**

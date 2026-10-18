@@ -1617,11 +1617,15 @@ public class PlayerControllerAi extends PlayerController {
         if (delayedReveal != null) {
             reveal(delayedReveal);
         }
-        if (brains.comboPlannerEnabled() && sa.getApi() == ApiType.ChangeZone
-                && (destination == ZoneType.Hand || destination == ZoneType.Library)) {
-            Card piece = brains.getComboPlanner().tutorTarget(fetchList);
-            if (piece != null) {
-                return piece; // fetch the card that completes a combo line
+        if (brains.comboPlannerEnabled() && sa.getApi() == ApiType.ChangeZone) {
+            Card planned = null;
+            if (destination == ZoneType.Hand || destination == ZoneType.Library) {
+                planned = brains.getComboPlanner().tutorTarget(fetchList); // the card that completes a combo line
+            } else if (destination == ZoneType.Exile) {
+                planned = brains.getComboPlanner().exileChoice(sa, fetchList); // e.g. Scepter imprints Reversal
+            }
+            if (planned != null) {
+                return planned;
             }
         }
         return brains.chooseCardToHiddenOriginChangeZone(destination, origin, sa, fetchList, player, decider);

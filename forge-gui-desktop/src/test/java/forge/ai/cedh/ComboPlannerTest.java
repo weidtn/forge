@@ -228,6 +228,65 @@ public class ComboPlannerTest extends AITest {
     }
 
     @Test
+    public void scepterImprintsReversalOverCheaperInstant() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCards("Island", 2, p);
+        addCard("Sol Ring", p);
+        addCard("Aetherflux Reservoir", p);
+        addCardToZone("Isochron Scepter", p, ZoneType.Hand);
+        addCardToZone("Dramatic Reversal", p, ZoneType.Hand);
+        addCardToZone("Brainstorm", p, ZoneType.Hand);   // mana value 1: the stock imprint choice
+
+        SpellAbility first = planner(p).nextStep();
+        AssertJUnit.assertNotNull(first);
+        AssertJUnit.assertEquals("Isochron Scepter", first.getHostCard().getName());
+
+        for (int i = 0; i < 200 && countCardsWithName(game, "Isochron Scepter") == 0; i++) {
+            game.getPhaseHandler().mainLoopStep();
+        }
+        playUntilStackClear(game);          // imprint trigger resolves
+
+        Card scepter = findCardWithName(game, "Isochron Scepter");
+        AssertJUnit.assertNotNull(scepter);
+        AssertJUnit.assertEquals(1, scepter.getImprintedCards().size());
+        AssertJUnit.assertEquals("Dramatic Reversal", scepter.getImprintedCards().get(0).getName());
+    }
+
+    @Test
+    public void nothingWithoutRocksForScepter() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCards("Island", 6, p);           // Reversal doesn't untap lands: no loop
+        addCard("Aetherflux Reservoir", p);
+        addCardToZone("Isochron Scepter", p, ZoneType.Hand);
+        addCardToZone("Dramatic Reversal", p, ZoneType.Hand);
+
+        AssertJUnit.assertNull(planner(p).nextStep());
+    }
+
+    @Test
+    public void winsWithScepterReversalAetherflux() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        addCards("Island", 4, p);           // Scepter {2} + first activation {2}
+        addCard("Sol Ring", p);             // 2 mana per untap = activation cost
+        addCard("Aetherflux Reservoir", p);
+        addCardToZone("Isochron Scepter", p, ZoneType.Hand);
+        addCardToZone("Dramatic Reversal", p, ZoneType.Hand);
+        addCardToZone("Brainstorm", p, ZoneType.Hand);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+        // Scepter + 7 copies: 20 + 1 + (2 + ... + 8) = 56, the first total above 50; the shot leaves 6
+        AssertJUnit.assertEquals("shot as soon as life passed 50", 6, p.getLife());
+    }
+
+    @Test
     public void keepsHandWithPieceAndTwoLands() {
         Game game = initAndCreateGame();
         Player p = setup(game);

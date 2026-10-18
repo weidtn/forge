@@ -14,6 +14,7 @@ import forge.game.GameEntity;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
+import forge.game.cost.CostTap;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
@@ -78,6 +79,31 @@ public final class ComboPlanner {
         return null;
     }
 
+    /** The mana ability of {@code c} whose only cost is {T} (Sol Ring, Mana Crypt, a dork), or null. */
+    static SpellAbility tapManaAbility(Card c, Player activator) {
+        for (SpellAbility sa : c.getManaAbilities()) {
+            if (sa.getPayCosts().hasOnlySpecificCostType(CostTap.class)) {
+                sa.setActivatingPlayer(activator);
+                return sa;
+            }
+        }
+        return null;
+    }
+
+    /** The {T} mana ability of an untapped permanent of ours matching the step's source, if playable now. */
+    private SpellAbility manaAbility(ComboStep.TapForMana step) {
+        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+            if (c.isTapped() || !step.source().test(c)) {
+                continue;
+            }
+            SpellAbility sa = tapManaAbility(c, ai);
+            if (sa != null && sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
+                return sa;
+            }
+        }
+        return null;
+    }
+
     /** The step's ability on {@code c} (in any zone), unprepared except for X; used for pricing. Null if none. */
     private SpellAbility pricedAbility(ComboStep step, Card c) {
         for (SpellAbility sa : c.getSpellAbilities()) {
@@ -110,13 +136,16 @@ public final class ComboPlanner {
     private List<SpellAbility> setupAbilities(ComboLine line, Card fetched) {
         List<SpellAbility> result = new ArrayList<>();
         for (ComboStep step : line.steps()) {
-            Card c;
             if (!step.setup()) {
-                continue;
-            } else if (fetched != null && step instanceof ComboStep.Cast && step.card().equals(fetched.getName())) {
+                continue; // TapForMana is never a setup step, so only Cast and Activate get past here
+            }
+            boolean isCast = step instanceof ComboStep.Cast;
+            String name = isCast ? ((ComboStep.Cast) step).card() : ((ComboStep.Activate) step).card();
+            Card c;
+            if (fetched != null && isCast && name.equals(fetched.getName())) {
                 c = fetched;
             } else if (step.when().test(ai)) {
-                c = ourCard(step.card());
+                c = ourCard(name);
             } else {
                 continue;
             }
@@ -277,10 +306,20 @@ public final class ComboPlanner {
         return toTop;
     }
 
-    /** The line's first step whose guard holds, prepared (X, targets) if it is playable now; else null (wait). */
+    /**
+     * The line's first step whose guard holds, prepared (X, targets) if it is playable now; else null (wait).
+     * A {@link ComboStep.TapForMana} with nothing left to tap is passed over: the next step may be paid otherwise.
+     */
     private SpellAbility firstStep(ComboLine line) {
         for (ComboStep step : line.steps()) {
             if (!step.when().test(ai)) {
+                continue;
+            }
+            if (step instanceof ComboStep.TapForMana tap) {
+                SpellAbility mana = manaAbility(tap);
+                if (mana != null) {
+                    return mana;
+                }
                 continue;
             }
             if (step instanceof ComboStep.Cast cast) {
@@ -329,6 +368,22 @@ public final class ComboPlanner {
             GameEntity target = planned == null ? null : planned.pick(ai);
             if (target != null && sa.canTarget(target)) {
                 return target;
+            }
+        }
+        return null;
+    }
+
+    /** The card one of our permanents should exile from {@code options} (Scepter imprints Reversal), or null. */
+    public Card exileChoice(SpellAbility sa, CardCollectionView options) {
+        Card host = sa.getHostCard();
+        if (host == null) {
+            return null;
+        }
+        for (ComboLine line : ComboLibrary.ALL) {
+            String wanted = line.exileChoices().get(host.getName());
+            Card c = wanted == null ? null : findByName(options, wanted);
+            if (c != null) {
+                return c;
             }
         }
         return null;
