@@ -34,6 +34,11 @@ public record ComboPiece(String card, Set<ZoneType> zones) {
         return new ComboPiece(card, Set.of(ZoneType.Hand, ZoneType.Battlefield, ZoneType.Graveyard));
     }
 
+    /** In our library (Entomb puts it into the graveyard) or already in our graveyard: Oracle for a reanimation line. */
+    static ComboPiece inLibraryOrGraveyard(String card) {
+        return new ComboPiece(card, Set.of(ZoneType.Library, ZoneType.Graveyard));
+    }
+
     /** Our copy of the piece in one of its zones, or null. */
     Card find(Player p) {
         for (ZoneType zone : zones) {

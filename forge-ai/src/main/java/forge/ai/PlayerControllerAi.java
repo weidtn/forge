@@ -1636,6 +1636,8 @@ public class PlayerControllerAi extends PlayerController {
                 planned = brains.getComboPlanner().tutorTarget(fetchList); // the card that completes a combo line
             } else if (destination == ZoneType.Exile) {
                 planned = brains.getComboPlanner().exileChoice(sa, fetchList); // e.g. Scepter imprints Reversal
+            } else if (destination == ZoneType.Graveyard) {
+                planned = brains.getComboPlanner().graveyardChoice(sa, fetchList); // e.g. Entomb buries Oracle
             }
             if (planned != null) {
                 return planned;

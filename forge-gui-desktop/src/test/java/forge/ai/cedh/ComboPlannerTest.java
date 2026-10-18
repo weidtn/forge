@@ -152,6 +152,47 @@ public class ComboPlannerTest extends AITest {
     }
 
     @Test
+    public void winsWithEntombConsultationShallowGrave() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        addCardToZone("Hoarding Broodlord", p, ZoneType.Library);   // mana value 8: the stock Entomb choice
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
+        addCards("Swamp", 4, p);
+        addCardToZone("Entomb", p, ZoneType.Hand);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Hand);
+        addCardToZone("Shallow Grave", p, ZoneType.Hand);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 500);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+        AssertJUnit.assertEquals("Entomb took Oracle", 0,
+                countCardsWithName(game, "Hoarding Broodlord", ZoneType.Graveyard));
+    }
+
+    @Test
+    public void oracleReanimationWaitsUntilTheWholeLineIsPayable() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
+        addCards("Swamp", 3, p);            // Entomb and Consultation, then nothing left for Shallow Grave's {1}{B}
+        addCardToZone("Entomb", p, ZoneType.Hand);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Hand);
+        addCardToZone("Shallow Grave", p, ZoneType.Hand);
+
+        AssertJUnit.assertNull("starting would exile our library with Oracle stuck in the graveyard",
+                planner(p).nextStep());
+
+        addCard("Swamp", p);
+        SpellAbility sa = planner(p).nextStep();
+
+        AssertJUnit.assertNotNull(sa);
+        AssertJUnit.assertEquals("Entomb", sa.getHostCard().getName());
+    }
+
+    @Test
     public void winsWithDemonicTutorForOracle() {
         Game game = initAndCreateGame();
         Player p = setup(game);

@@ -20,6 +20,11 @@ public interface ComboTarget {
         return ai -> ComboPlanner.findByName(ai.getCardsIn(ZoneType.Battlefield), name);
     }
 
+    /** The card with that name in our graveyard (Reanimate's target: Oracle). */
+    static ComboTarget ourGraveyardCard(String name) {
+        return ai -> ComboPlanner.findByName(ai.getCardsIn(ZoneType.Graveyard), name);
+    }
+
     /** The opponent still in the game with the lowest life. */
     static ComboTarget weakestOpponent() {
         return ai -> ai.getOpponents().min(PlayerPredicates.compareByLife());

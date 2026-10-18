@@ -477,6 +477,31 @@ public final class ComboPlanner {
         return null;
     }
 
+    /**
+     * First line (in {@link ComboLibrary#ALL} order) with a step casting {@code card} and every piece in its zones.
+     * Neither its condition nor its cost is checked, so it still holds while that step resolves, with the card no
+     * longer in hand.
+     */
+    private ComboLine assembledLineCasting(String card) {
+        for (ComboLine line : ComboLibrary.ALL) {
+            if (line.steps().stream().anyMatch(step -> step instanceof ComboStep.Cast cast && cast.card().equals(card))
+                    && line.pieces().stream().allMatch(piece -> piece.find(ai) != null)) {
+                return line;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The card our line spell puts into our graveyard from {@code options}: the line's win card (Entomb buries Oracle
+     * for a reanimation line), or null to let the AI choose.
+     */
+    public Card graveyardChoice(SpellAbility sa, CardCollectionView options) {
+        Card host = sa.getHostCard();
+        ComboLine line = host == null ? null : assembledLineCasting(host.getName());
+        return line == null ? null : findByName(options, line.winCard());
+    }
+
     private static Card optionNamed(Iterable<? extends GameEntity> options, String name) {
         for (GameEntity e : options) {
             if (e instanceof Card c && c.getName().equals(name)) {
@@ -550,9 +575,16 @@ public final class ComboPlanner {
         return null;
     }
 
-    /** True while the Pact line is live: Oracle in hand, so we decline every card. */
+    /**
+     * True while a Pact line is live, so we decline every card: Oracle in hand, or in our graveyard for a line that
+     * reanimates it after Pact.
+     */
     public boolean wantsToExileLibraryWithPact() {
-        return findByName(ai.getCardsIn(ZoneType.Hand), ComboLibrary.ORACLE) != null;
+        if (findByName(ai.getCardsIn(ZoneType.Hand), ComboLibrary.ORACLE) != null) {
+            return true;
+        }
+        return findByName(ai.getCardsIn(ZoneType.Graveyard), ComboLibrary.ORACLE) != null
+                && assembledLineCasting(ComboLibrary.TAINTED_PACT) != null;
     }
 
     /** Opening-hand check: keep iff the hand has a combo piece or tutor, and at least two mana sources. */

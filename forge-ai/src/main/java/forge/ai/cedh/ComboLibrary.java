@@ -1,5 +1,6 @@
 package forge.ai.cedh;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +37,16 @@ public final class ComboLibrary {
     public static final String SHANG_CHI = "Shang-Chi, Master of Kung Fu";
     public static final String DEADEYE = "Deadeye Navigator";
     public static final String GREAT_OAK = "Great Oak Guardian";
+    public static final String ENTOMB = "Entomb";
+    public static final String SHALLOW_GRAVE = "Shallow Grave";
+    public static final String REANIMATE = "Reanimate";
+    public static final String UNEARTH = "Unearth";
+    public static final String PERSIST = "Persist";
+    public static final String NECROMANCY = "Necromancy";
+    public static final String CORPSE_DANCE = "Corpse Dance";
+
+    /** Spells of the Oracle-reanimate lines, cheapest first (Unearth before Reanimate: same mana, no life). */
+    static final List<String> REANIMATORS = List.of(UNEARTH, REANIMATE, SHALLOW_GRAVE, PERSIST, NECROMANCY, CORPSE_DANCE);
 
     /** Scepter's activation is {2}, {T}. */
     private static final int SCEPTER_ACTIVATION_MANA = 2;
@@ -48,6 +59,8 @@ public final class ComboLibrary {
     /** The Knacksaw line's kill pieces; Clique from hand needs Shang-Chi, since it enters summoning-sick. */
     private static final ComboPiece CLIQUE_PIECE = ComboPiece.inHandOrPlay(KNACKSAW);
     private static final ComboPiece VITALITY_PIECE = ComboPiece.inHandOrPlay(VITALITY);
+    /** Reanimate costs life equal to Oracle's mana value. */
+    private static final int ORACLE_MANA_VALUE = 2;
 
     /** Oracle alone has devotion 2, so a library of <= 2 cards is a guaranteed win. */
     static boolean libraryAtMost(Player p, int n) {
@@ -340,17 +353,83 @@ public final class ComboLibrary {
                 Map.of(GREAT_OAK, ComboTarget.self()), Map.of(), Map.of(DEADEYE, GREAT_OAK));
     }
 
-    public static final List<ComboLine> ALL = List.of(
-            ComboLine.castInOrder("thoracle-finish", List.of(ORACLE), p -> libraryAtMost(p, 2)),
-            ComboLine.castInOrder("thoracle-consult", List.of(CONSULTATION, ORACLE), p -> true),
-            ComboLine.castInOrder("thoracle-pact", List.of(TAINTED_PACT, ORACLE), ComboLibrary::libraryHasNoDuplicateNames),
-            heliodBallista(),
-            scepterReversal(),
-            breachLedBrainFreeze(),
-            knacksawVitality(),
-            deadeyeShangChi(),
-            deadeyeGreatOak()
-    );
+    private static boolean inZone(Player p, ZoneType zone, String name) {
+        return ComboPlanner.findByName(p.getCardsIn(zone), name) != null;
+    }
+
+    /** The top creature card of our graveyard (the last one put there), or null: what Shallow Grave returns. */
+    static Card topGraveyardCreature(Player p) {
+        CardCollectionView graveyard = p.getCardsIn(ZoneType.Graveyard);
+        for (int i = graveyard.size() - 1; i >= 0; i--) {
+            if (graveyard.get(i).isCreature()) {
+                return graveyard.get(i);
+            }
+        }
+        return null;
+    }
+
+    /** Consultation in hand, else Tainted Pact with a library it can exile whole (declining every card). */
+    static boolean canExileLibrary(Player p) {
+        return inZone(p, ZoneType.Hand, CONSULTATION)
+                || (inZone(p, ZoneType.Hand, TAINTED_PACT) && libraryHasNoDuplicateNames(p));
+    }
+
+    /**
+     * Thassa's Oracle reanimated onto an empty library by {@code r}: Entomb puts Oracle into our graveyard if it is
+     * still in the library (see {@link ComboPlanner#graveyardChoice}), Consultation naming a card not in the library
+     * (else Tainted Pact) exiles the library, then {@code r} returns Oracle. Each pending cast is guarded by its card
+     * being in hand, so the affordability check prices the rest of the line: it never starts unless {@code r} is
+     * still payable after the exile, which would otherwise deck us. Shallow Grave and Corpse Dance take the top
+     * creature card of our graveyard, which Oracle is right after Entomb; Necromancy's enter trigger takes the target.
+     */
+    private static ComboLine oracleReanimate(String r) {
+        boolean topCreatureOnly = r.equals(SHALLOW_GRAVE) || r.equals(CORPSE_DANCE);
+        boolean targetsOnCast = !topCreatureOnly && !r.equals(NECROMANCY);
+        Predicate<Player> libraryLeft = p -> !p.getCardsIn(ZoneType.Library).isEmpty();
+        Predicate<Player> oracleReachable = p -> {
+            if (inZone(p, ZoneType.Graveyard, ORACLE)) {
+                Card top = topGraveyardCreature(p);
+                return (!topCreatureOnly || ORACLE.equals(top.getName()))
+                        && (!libraryLeft.test(p) || canExileLibrary(p));
+            }
+            return inZone(p, ZoneType.Library, ORACLE) && inZone(p, ZoneType.Hand, ENTOMB) && canExileLibrary(p);
+        };
+        Predicate<Player> survives = r.equals(REANIMATE) ? p -> p.getLife() > ORACLE_MANA_VALUE : p -> true;
+        ComboTarget oracle = ComboTarget.ourGraveyardCard(ORACLE);
+        return new ComboLine("oracle-reanimate-" + r.toLowerCase().replace(' ', '-'),
+                List.of(ComboPiece.inHand(r), ComboPiece.inLibraryOrGraveyard(ORACLE)),
+                oracleReachable.and(survives),
+                List.of(new ComboStep.Cast(ENTOMB, 0, null,
+                                p -> inZone(p, ZoneType.Hand, ENTOMB) && inZone(p, ZoneType.Library, ORACLE), true),
+                        new ComboStep.Cast(CONSULTATION, 0, null,
+                                p -> inZone(p, ZoneType.Hand, CONSULTATION) && libraryLeft.test(p), true),
+                        new ComboStep.Cast(TAINTED_PACT, 0, null, p -> inZone(p, ZoneType.Hand, TAINTED_PACT)
+                                && !inZone(p, ZoneType.Hand, CONSULTATION) && libraryLeft.test(p), true),
+                        new ComboStep.Cast(r, 0, targetsOnCast ? oracle : null, p -> inZone(p, ZoneType.Hand, r), true)),
+                r.equals(NECROMANCY) ? Map.of(NECROMANCY, oracle) : Map.of(), Map.of(), Map.of());
+    }
+
+    public static final List<ComboLine> ALL = allLines();
+
+    /** Thoracle lines first, then the Oracle-reanimate lines, then the rest. */
+    private static List<ComboLine> allLines() {
+        List<ComboLine> lines = new ArrayList<>(List.of(
+                ComboLine.castInOrder("thoracle-finish", List.of(ORACLE), p -> libraryAtMost(p, 2)),
+                ComboLine.castInOrder("thoracle-consult", List.of(CONSULTATION, ORACLE), p -> true),
+                ComboLine.castInOrder("thoracle-pact", List.of(TAINTED_PACT, ORACLE),
+                        ComboLibrary::libraryHasNoDuplicateNames)));
+        for (String r : REANIMATORS) {
+            lines.add(oracleReanimate(r));
+        }
+        lines.addAll(List.of(
+                heliodBallista(),
+                scepterReversal(),
+                breachLedBrainFreeze(),
+                knacksawVitality(),
+                deadeyeShangChi(),
+                deadeyeGreatOak()));
+        return List.copyOf(lines);
+    }
 
     /**
      * Tutors and what they can find. Destination (hand vs. top of library) is read from the card script.
@@ -367,9 +446,11 @@ public final class ComboLibrary {
 
     /**
      * Cards the normal AI must never cast on its own: they only make sense inside a line. Breach is sacrificed at end
-     * of turn, so casting it without the loop throws the piece away.
+     * of turn, so casting it without the loop throws the piece away; so does Shallow Grave's creature, exiled at end
+     * of turn, and Entomb would bury the stock choice instead of Oracle.
      */
-    public static final Set<String> COMBO_ONLY = Set.of(ORACLE, CONSULTATION, TAINTED_PACT, BREACH);
+    public static final Set<String> COMBO_ONLY = Set.of(ORACLE, CONSULTATION, TAINTED_PACT, BREACH, ENTOMB,
+            SHALLOW_GRAVE);
 
     public static boolean isComboOnly(Card c) {
         return c != null && COMBO_ONLY.contains(c.getName());
