@@ -1,17 +1,27 @@
 package forge.ai.cedh;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.testng.AssertJUnit;
 import org.testng.annotations.Test;
 
 import forge.ai.AITest;
 import forge.ai.LobbyPlayerAi;
 import forge.ai.PlayerControllerAi;
+import forge.deck.Deck;
 import forge.game.Game;
+import forge.game.GameRules;
+import forge.game.GameStage;
+import forge.game.GameType;
+import forge.game.Match;
+import forge.game.ability.AbilityKey;
 import forge.game.ability.ApiType;
 import forge.game.card.Card;
 import forge.game.card.CounterEnumType;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 
@@ -366,6 +376,146 @@ public class ComboPlannerTest extends AITest {
         AssertJUnit.assertTrue("p should have won", p.hasWon());
         AssertJUnit.assertEquals("won with Oracle", 1, countCardsWithName(game, ComboLibrary.ORACLE));
         AssertJUnit.assertFalse("opponent not milled out", opp.getCardsIn(ZoneType.Library).isEmpty());
+    }
+
+    /** Kinnan, Enduring Vitality and Knacksaw Clique on the battlefield; each opponent has {@code oppLibrary} cards. */
+    private Card setupKnacksaw(Player p, int oppLibrary) {
+        for (Player opp : p.getOpponents()) {
+            fillLibrary(opp, oppLibrary);
+        }
+        addCard("Kinnan, Bonder Prodigy", p).setSickness(false);
+        addCard("Enduring Vitality", p).setSickness(false);
+        Card clique = addCard("Knacksaw Clique", p);
+        p.getGame().getAction().checkStateEffects(true);
+        return clique;
+    }
+
+    /** Four players, o1, p, o2, o3 in turn order, in p's (players.get(1)) MAIN1. */
+    private Game initAndCreateFourPlayerGame() {
+        initAndCreateGame();    // as AITest's three-player game: the Localizer must be loaded first
+        List<RegisteredPlayer> players = new ArrayList<>();
+        Deck deck = new Deck();
+        for (String name : List.of("o1", "p", "o2", "o3")) {
+            players.add(new RegisteredPlayer(deck).setPlayer(new LobbyPlayerAi(name, null)));
+        }
+        GameRules rules = new GameRules(GameType.Constructed);
+        Game game = new Game(players, rules, new Match(rules, players, "Test"));
+        game.setAge(GameStage.Play);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, game.getPlayers().get(1));
+        game.getPhaseHandler().onStackResolved();
+        return game;
+    }
+
+    @Test
+    public void knacksawCliqueKillsEveryOpponentBeforeOurNextTurn() {
+        Game game = initAndCreateFourPlayerGame();
+        Player p = setup(game);
+        setupKnacksaw(p, 60).setSickness(false);
+        Player o1 = game.getPlayers().get(0);
+        Player o2 = game.getPlayers().get(2);
+        Player o3 = game.getPlayers().get(3);
+        int turn = game.getPhaseHandler().getTurn();
+        long start = System.nanoTime();
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+        AssertJUnit.assertEquals("the opponent who draws next is exiled", 0, o2.getCardsIn(ZoneType.Library).size());
+        AssertJUnit.assertEquals("o3 waits for o2's turn", 60, o3.getCardsIn(ZoneType.Library).size());
+        AssertJUnit.assertEquals("o1 waits for o3's turn", 60, o1.getCardsIn(ZoneType.Library).size());
+
+        for (int i = 0; i < 20000 && !game.isGameOver(); i++) {
+            game.getPhaseHandler().mainLoopStep();
+        }
+        long millis = (System.nanoTime() - start) / 1_000_000;
+
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+        AssertJUnit.assertTrue(o1.hasLost() && o2.hasLost() && o3.hasLost());
+        AssertJUnit.assertEquals("o1 lost on its draw, before our next turn", turn + 3, game.getPhaseHandler().getTurn());
+        // emptying all three libraries in one turn took minutes: every exiled card's may-play effect costs each
+        // state check and each AI priority
+        AssertJUnit.assertTrue("kill took " + millis + " ms", millis < 60_000);
+    }
+
+    @Test
+    public void summoningSickKnacksawNeedsShangChi() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Card clique = setupKnacksaw(p, 30);   // sick: can't tap or untap
+
+        AssertJUnit.assertNull(planner(p).nextStep());
+
+        addCard("Shang-Chi, Master of Kung Fu", p);   // its abilities-as-though-haste lets the sick Clique loop
+        game.getAction().checkStateEffects(true);
+        SpellAbility sa = planner(p).nextStep();
+
+        AssertJUnit.assertNotNull(sa);
+        AssertJUnit.assertEquals(clique, sa.getHostCard());
+        AssertJUnit.assertTrue(sa.isManaAbility());
+    }
+
+    @Test
+    public void deadeyeNavigatorPairsWithShangChi() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Card shangChi = addCard("Shang-Chi, Master of Kung Fu", p);
+        addCard("Colossal Dreadmaw", p);    // the stock pairing choice: the best creature
+        game.getAction().checkStateEffects(true);
+
+        Card deadeye = game.getAction().moveToPlay(addCardToZone("Deadeye Navigator", p, ZoneType.Hand), null,
+                AbilityKey.newMap());
+        playUntilStackClear(game);
+
+        AssertJUnit.assertEquals(shangChi, deadeye.getPairedWith());
+    }
+
+    @Test
+    public void deadeyeShangChiEngineDigsKnacksawPiecesAndExilesLibrary() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+        ((LobbyPlayerAi) p.getLobbyPlayer()).setAiProfile("cEDH");
+        Player opp = game.getPlayers().get(0);
+        fillLibrary(opp, 20);
+        // a five-card library: the first dig takes Knacksaw Clique, the rest go to the bottom, the second finds Vitality
+        addCardToZone("Knacksaw Clique", p, ZoneType.Library);
+        addCardToZone("Enduring Vitality", p, ZoneType.Library);
+        fillLibrary(p, 3);
+        addCard("Kinnan, Bonder Prodigy", p).setSickness(false);
+        Card shangChi = addCard("Shang-Chi, Master of Kung Fu", p);
+        Card deadeye = addCard("Deadeye Navigator", p);
+        shangChi.setPairedWith(deadeye);
+        deadeye.setPairedWith(shangChi);
+        game.getAction().checkStateEffects(true);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+        AssertJUnit.assertEquals(1, countCardsWithName(game, "Knacksaw Clique"));
+        AssertJUnit.assertEquals(1, countCardsWithName(game, "Enduring Vitality"));
+        AssertJUnit.assertEquals("opponent's library exiled this turn", 0, opp.getCardsIn(ZoneType.Library).size());
+    }
+
+    @Test
+    public void deadeyeGreatOakEngineDigsKnacksawClique() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+        ((LobbyPlayerAi) p.getLobbyPlayer()).setAiProfile("cEDH");
+        Player opp = game.getPlayers().get(0);
+        fillLibrary(opp, 20);
+        addCardToZone("Knacksaw Clique", p, ZoneType.Library);
+        fillLibrary(p, 4);
+        addCard("Kinnan, Bonder Prodigy", p).setSickness(false);
+        addCard("Enduring Vitality", p).setSickness(false);   // every creature taps for any colour
+        addCard("Llanowar Elves", p).setSickness(false);
+        Card greatOak = addCard("Great Oak Guardian", p);
+        Card deadeye = addCard("Deadeye Navigator", p);
+        deadeye.setSickness(false);
+        greatOak.setPairedWith(deadeye);
+        deadeye.setPairedWith(greatOak);
+        game.getAction().checkStateEffects(true);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+
+        AssertJUnit.assertEquals("Kinnan dug up Knacksaw Clique", 1, countCardsWithName(game, "Knacksaw Clique"));
+        AssertJUnit.assertNotSame("Great Oak was flickered", greatOak, findCardWithName(game, "Great Oak Guardian"));
+        AssertJUnit.assertTrue("Great Oak's trigger pumped our creatures",
+                findCardWithName(game, "Llanowar Elves").getNetPower() >= 3);
     }
 
     @Test

@@ -1459,6 +1459,10 @@ public class AiController {
             if (comboStep != null) {
                 return singleSpellAbilityList(comboStep);
             }
+            if (comboPlanner.passesOnOwnAbility()) {
+                return null;
+            }
+            comboPlanner.holdUntappedPieces();   // e.g. Knacksaw Clique, for opponents' upkeeps
         }
 
         if (usesFullSimulation()) {

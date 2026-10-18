@@ -181,6 +181,10 @@ public class AiAttackController {
     }
 
     private boolean canAttackWrapper(final Card attacker, final GameEntity defender) {
+        if (ai.getController() instanceof PlayerControllerAi pc && pc.getAi().comboPlannerEnabled()
+                && pc.getAi().getComboPlanner().keepsUntapped(attacker)) {
+            return false; // e.g. Knacksaw Clique, kept for opponents' upkeeps
+        }
         if (nextTurn) {
             return CombatUtil.canAttackNextTurn(attacker, defender);
         }

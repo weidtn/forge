@@ -341,6 +341,13 @@ public class PlayerControllerAi extends PlayerController {
         if (delayedReveal != null) {
             reveal(delayedReveal);
         }
+        if (brains.comboPlannerEnabled() && sa != null) {
+            // e.g. Deadeye Navigator pairs with Shang-Chi; Kinnan digs up the missing Knacksaw piece
+            int planned = optionList.indexOf(brains.getComboPlanner().effectChoice(sa, optionList));
+            if (planned >= 0) {
+                return optionList.get(planned);
+            }
+        }
         return SpellApiToAi.Converter.get(sa).chooseSingleEntity(player, sa, optionList, isOptional, targetedPlayer, params);
     }
 

@@ -32,10 +32,11 @@ public sealed interface ComboStep permits ComboStep.Cast, ComboStep.Activate, Co
     record Activate(String card, ApiType api, ComboTarget target, Predicate<Player> when, boolean setup) implements ComboStep {}
 
     /**
-     * Tap one untapped permanent of ours matching {@code source} for mana (an ability whose only cost is {T}); the
-     * mana floats for the next step. Loop fuel, so never part of the affordability check.
+     * Tap one untapped permanent of ours matching {@code source} for mana (an ability whose only cost is {T}), making
+     * {@code color} if it makes mana of any colour (null: the AI picks); the mana floats for the next step. Loop fuel,
+     * so never part of the affordability check.
      */
-    record TapForMana(Predicate<Card> source, Predicate<Player> when) implements ComboStep {
+    record TapForMana(Predicate<Card> source, String color, Predicate<Player> when) implements ComboStep {
         @Override
         public boolean setup() {
             return false;
@@ -43,9 +44,9 @@ public sealed interface ComboStep permits ComboStep.Cast, ComboStep.Activate, Co
     }
 
     /**
-     * Activate the mana ability of our permanent {@code card} (Lion's Eye Diamond, cracked while holding priority),
-     * making {@code color} if it makes mana of any colour; the mana floats. Loop fuel, never part of the
-     * affordability check.
+     * Activate the mana ability of our permanent {@code card} that makes the most mana (Lion's Eye Diamond, cracked
+     * while holding priority; Shang-Chi's own ability over Enduring Vitality's), making {@code color} if it makes mana
+     * of any colour; the mana floats. Loop fuel, never part of the affordability check.
      */
     record ManaAbility(String card, String color, Predicate<Player> when) implements ComboStep {
         @Override

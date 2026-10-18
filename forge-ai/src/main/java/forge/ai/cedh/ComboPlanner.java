@@ -11,6 +11,7 @@ import forge.ai.ComputerUtilCost;
 import forge.ai.ComputerUtilMana;
 import forge.card.mana.ManaCost;
 import forge.game.GameEntity;
+import forge.game.ability.ApiType;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
@@ -25,12 +26,18 @@ import forge.game.trigger.WrappedAbility;
 import forge.game.zone.ZoneType;
 
 public final class ComboPlanner {
-    /** Backstop against a line that loops without progress: planner actions allowed per turn. */
+    /**
+     * Backstop against a line that loops without progress: planner actions allowed per turn. The Knacksaw loop takes
+     * two per exiled card and empties one library per turn (at most ~95 cards in Commander), and each Kinnan dig the
+     * engines pay for takes ~15 more.
+     */
     static final int MAX_ACTIONS_PER_TURN = 300;
 
     private final Player ai;
     private int actionTurn = -1;
     private int actionsThisTurn;
+    /** The spell or ability {@link #nextStep()} last returned. */
+    private SpellAbility lastPlayed;
 
     public ComboPlanner(Player ai) {
         this.ai = ai;
@@ -114,29 +121,37 @@ public final class ComboPlanner {
             }
             SpellAbility sa = tapManaAbility(c, ai);
             if (sa != null && sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
-                return sa;
-            }
-        }
-        return null;
-    }
-
-    /** The step's mana ability of our permanent, if playable now; any-colour mana is set to make the step's colour. */
-    private SpellAbility colorManaAbility(ComboStep.ManaAbility step) {
-        Card c = findByName(ai.getCardsIn(ZoneType.Battlefield), step.card());
-        if (c == null) {
-            return null;
-        }
-        for (SpellAbility sa : c.getManaAbilities()) {
-            sa.setActivatingPlayer(ai);
-            if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
-                if (sa.getManaPart().isAnyMana()) {
-                    // LED discards the hand before the colour is chosen, so the stock hand-based guess is blind
+                if (step.color() != null && sa.getManaPart().isAnyMana()) {
                     sa.getManaPart().setExpressChoice(step.color());
                 }
                 return sa;
             }
         }
         return null;
+    }
+
+    /**
+     * The step's mana ability of our permanent that makes the most mana, if playable now; any-colour mana is set to
+     * make the step's colour.
+     */
+    private SpellAbility colorManaAbility(ComboStep.ManaAbility step) {
+        Card c = findByName(ai.getCardsIn(ZoneType.Battlefield), step.card());
+        if (c == null) {
+            return null;
+        }
+        SpellAbility best = null;
+        for (SpellAbility sa : c.getManaAbilities()) {
+            sa.setActivatingPlayer(ai);
+            if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)
+                    && (best == null || sa.amountOfManaGenerated(true) > best.amountOfManaGenerated(true))) {
+                best = sa;
+            }
+        }
+        if (best != null && best.getManaPart().isAnyMana()) {
+            // the stock choice guesses from the hand, which LED discards first and which says nothing of loop colours
+            best.getManaPart().setExpressChoice(step.color());
+        }
+        return best;
     }
 
     /** The step's ability on {@code c} (in any zone), unprepared except for X; used for pricing. Null if none. */
@@ -394,8 +409,37 @@ public final class ComboPlanner {
         SpellAbility sa = line == null ? tutorStep() : firstStep(line);
         if (sa != null) {
             actionsThisTurn++;
+            lastPlayed = sa;
         }
         return sa;
+    }
+
+    /**
+     * True while the top of the stack is the ability the planner last played: the line goes on once it resolves, so
+     * the AI passes instead of searching every card it could respond with. In a Knacksaw loop that search covers every
+     * exiled card, once per activation.
+     */
+    public boolean passesOnOwnAbility() {
+        if (lastPlayed == null || ai.getGame().getStack().isEmpty()) {
+            return false;
+        }
+        SpellAbility top = ai.getGame().getStack().peekAbility();
+        return top.isAbility() && top.getActivatingPlayer() == ai && top.getApi() == lastPlayed.getApi()
+                && top.getHostCard().equals(lastPlayed.getHostCard());
+    }
+
+    /** True if the AI must leave our {@code c} untapped for a line that goes on in a later turn: no mana, no attack. */
+    public boolean keepsUntapped(Card c) {
+        return ComboLibrary.keepUntapped(ai, c);
+    }
+
+    /** Holds back the cards {@link #keepsUntapped} names from the AI's mana payments until it next chooses a spell. */
+    public void holdUntappedPieces() {
+        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+            if (keepsUntapped(c)) {
+                AiCardMemory.rememberCard(ai, c, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
+            }
+        }
     }
 
     /**
@@ -428,6 +472,53 @@ public final class ComboPlanner {
             Card c = wanted == null ? null : findByName(options, wanted);
             if (c != null) {
                 return c;
+            }
+        }
+        return null;
+    }
+
+    private static Card optionNamed(Iterable<? extends GameEntity> options, String name) {
+        for (GameEntity e : options) {
+            if (e instanceof Card c && c.getName().equals(name)) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Our pick among {@code options} where the stock choice breaks a line, or null to let the AI choose:
+     * <ul>
+     * <li>soulbond: Deadeye Navigator pairs with the creature its line flickers (first line in order, so Shang-Chi
+     * before Great Oak Guardian);</li>
+     * <li>a dig onto the battlefield by a line piece (Kinnan): the first piece missing from a line that needs the
+     * digger, in line order, so a Knacksaw kill piece before an engine piece.</li>
+     * </ul>
+     */
+    public Card effectChoice(SpellAbility sa, Iterable<? extends GameEntity> options) {
+        Card host = sa.getHostCard();
+        if (host == null) {
+            return null;
+        }
+        if (sa.getApi() == ApiType.Bond) {
+            for (ComboLine line : ComboLibrary.ALL) {
+                String wanted = line.soulbondPartners().get(host.getName());
+                Card c = wanted == null ? null : optionNamed(options, wanted);
+                if (c != null) {
+                    return c;
+                }
+            }
+        } else if (sa.getApi() == ApiType.Dig && ZoneType.Battlefield.name().equals(sa.getParam("DestinationZone"))) {
+            for (ComboLine line : ComboLibrary.ALL) {
+                if (line.pieces().stream().noneMatch(piece -> piece.card().equals(host.getName()))) {
+                    continue;
+                }
+                for (ComboPiece piece : line.pieces()) {
+                    Card c = piece.find(ai) == null ? optionNamed(options, piece.card()) : null;
+                    if (c != null) {
+                        return c;
+                    }
+                }
             }
         }
         return null;

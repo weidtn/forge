@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import forge.card.MagicColor;
 import forge.game.ability.ApiType;
 import forge.game.card.Card;
 import forge.game.card.CardCollectionView;
@@ -29,11 +30,24 @@ public final class ComboLibrary {
     public static final String BREACH = "Underworld Breach";
     public static final String LED = "Lion's Eye Diamond";
     public static final String BRAIN_FREEZE = "Brain Freeze";
+    public static final String KINNAN = "Kinnan, Bonder Prodigy";
+    public static final String KNACKSAW = "Knacksaw Clique";
+    public static final String VITALITY = "Enduring Vitality";
+    public static final String SHANG_CHI = "Shang-Chi, Master of Kung Fu";
+    public static final String DEADEYE = "Deadeye Navigator";
+    public static final String GREAT_OAK = "Great Oak Guardian";
 
     /** Scepter's activation is {2}, {T}. */
     private static final int SCEPTER_ACTIVATION_MANA = 2;
     /** Aetherflux's shot costs 50 life; paying it at exactly 50 would kill us. */
     private static final int AETHERFLUX_LIFE = 50;
+    /** Kinnan's dig costs {5}{G}{U}. */
+    private static final int KINNAN_ACTIVATION_MANA = 7;
+    /** Deadeye's flicker costs {1}{U}; the Great Oak loop runs only if an untap makes at least two more than that. */
+    private static final int GREAT_OAK_MANA_PER_UNTAP = 4;
+    /** The Knacksaw line's kill pieces; Clique from hand needs Shang-Chi, since it enters summoning-sick. */
+    private static final ComboPiece CLIQUE_PIECE = ComboPiece.inHandOrPlay(KNACKSAW);
+    private static final ComboPiece VITALITY_PIECE = ComboPiece.inHandOrPlay(VITALITY);
 
     /** Oracle alone has devotion 2, so a library of <= 2 cards is a guaranteed win. */
     static boolean libraryAtMost(Player p, int n) {
@@ -82,7 +96,7 @@ public final class ComboLibrary {
                                 p -> !ballistaHasLifelink(p), true),
                         new ComboStep.Activate(BALLISTA, ApiType.DealDamage, ComboTarget.weakestOpponent(),
                                 p -> ballistaCounters(p) >= 2 && ballistaHasLifelink(p), false)),
-                Map.of(HELIOD, ComboTarget.ourCard(BALLISTA)), Map.of());
+                Map.of(HELIOD, ComboTarget.ourCard(BALLISTA)), Map.of(), Map.of());
     }
 
     /**
@@ -130,13 +144,13 @@ public final class ComboLibrary {
                 List.of(ComboStep.Cast.fromHand(SCEPTER),
                         new ComboStep.Activate(AETHERFLUX, ApiType.DealDamage, ComboTarget.weakestOpponent(),
                                 p -> p.getLife() > AETHERFLUX_LIFE, false),
-                        new ComboStep.TapForMana(c -> !c.isLand(), p -> {
+                        new ComboStep.TapForMana(c -> !c.isLand(), null, p -> {
                             Card scepter = scepterWithReversal(p);
                             return scepter != null && scepter.isUntapped()
                                     && p.getManaPool().totalMana() < SCEPTER_ACTIVATION_MANA;
                         }),
                         new ComboStep.Activate(SCEPTER, ApiType.Play, null, scepterLive, true)),
-                Map.of(), Map.of(SCEPTER, REVERSAL));
+                Map.of(), Map.of(SCEPTER, REVERSAL), Map.of());
     }
 
     /**
@@ -156,7 +170,174 @@ public final class ComboLibrary {
                                 p -> BreachLoop.of(p).canCastBrainFreeze(), false),
                         new ComboStep.Cast(LED, 0, null, p -> BreachLoop.of(p).canCastLed(), false),
                         new ComboStep.ManaAbility(LED, "U", p -> BreachLoop.of(p).ledOnBattlefield())),
-                Map.of(BRAIN_FREEZE, BreachLoop::target), Map.of());
+                Map.of(BRAIN_FREEZE, BreachLoop::target), Map.of(), Map.of());
+    }
+
+    private static Card ourPermanent(Player p, String name) {
+        return ComboPlanner.findByName(p.getCardsIn(ZoneType.Battlefield), name);
+    }
+
+    private static boolean poolHas(Player p, byte color) {
+        return p.getManaPool().getAmountOfColor(color) > 0;
+    }
+
+    /** The opponent who draws next still has cards to exile (see {@link ComboTarget#nextOpponentToDraw()}). */
+    static boolean nextDrawerHasLibrary(Player p) {
+        return ComboTarget.nextOpponentToDraw().pick(p) != null;
+    }
+
+    /**
+     * Knacksaw Clique can tap and untap this turn: on the battlefield and not summoning-sick (Shang-Chi counts), or
+     * in hand with Shang-Chi out, since it enters summoning-sick.
+     */
+    static boolean cliqueCanLoop(Player p) {
+        Card clique = ourPermanent(p, KNACKSAW);
+        return clique != null ? !clique.isAbilitySick() : ourPermanent(p, SHANG_CHI) != null;
+    }
+
+    private static boolean cliqueTapped(Player p) {
+        Card clique = ourPermanent(p, KNACKSAW);
+        return clique != null && clique.isTapped();
+    }
+
+    private static boolean cliqueUntapped(Player p) {
+        Card clique = ourPermanent(p, KNACKSAW);
+        return clique != null && clique.isUntapped();
+    }
+
+    /**
+     * Knacksaw Clique once the kill is on the battlefield and an opponent still has cards: the loop goes on in later
+     * opponents' upkeeps, where Clique starts it only if it is untapped (or other mana pays the first {1}{U}). The AI
+     * neither taps it for mana nor attacks with it meanwhile.
+     */
+    static boolean keepUntapped(Player p, Card c) {
+        return c.getName().equals(KNACKSAW) && c.getController() == p && c.isInPlay()
+                && ourPermanent(p, VITALITY) != null && ourPermanent(p, KINNAN) != null
+                && p.getOpponents().anyMatch(o -> !o.getCardsIn(ZoneType.Library).isEmpty());
+    }
+
+    /**
+     * Kinnan + Knacksaw Clique + Enduring Vitality: Clique taps for U through Vitality, Kinnan adds another U, and
+     * the {1}{U} activation untaps Clique while the opponent who draws next exiles their top card. Mana-neutral. The
+     * line stops once that library is empty (they lose on the draw) and goes on in the next opponent's upkeep, before
+     * their draw: one library per turn. Each exiled card leaves an until-end-of-turn may-play effect, and every
+     * state check and every AI's priority pays for all of them, so emptying all libraries in one turn took Forge
+     * minutes in four-player; the opponents still all lose before our next turn.
+     */
+    private static ComboLine knacksawVitality() {
+        return new ComboLine("kinnan-knacksaw-vitality",
+                List.of(CLIQUE_PIECE, VITALITY_PIECE, ComboPiece.onBattlefield(KINNAN)),
+                p -> cliqueCanLoop(p) && nextDrawerHasLibrary(p),
+                List.of(ComboStep.Cast.fromHand(VITALITY),
+                        ComboStep.Cast.fromHand(KNACKSAW),
+                        new ComboStep.Activate(KNACKSAW, ApiType.Dig, ComboTarget.nextOpponentToDraw(),
+                                ComboLibrary::cliqueTapped, false),
+                        new ComboStep.ManaAbility(KNACKSAW, "U", ComboLibrary::cliqueUntapped)),
+                Map.of(), Map.of(), Map.of());
+    }
+
+    /**
+     * Kinnan's dig has a purpose: a Knacksaw line piece is neither in hand nor on the battlefield, and every such
+     * piece is still in our library. The engines below make mana only while this holds.
+     */
+    static boolean killPieceInLibrary(Player p) {
+        boolean missing = false;
+        for (ComboPiece piece : List.of(CLIQUE_PIECE, VITALITY_PIECE)) {
+            if (piece.find(p) != null) {
+                continue;
+            }
+            if (ComboPlanner.findByName(p.getCardsIn(ZoneType.Library), piece.card()) == null) {
+                return false;
+            }
+            missing = true;
+        }
+        return missing;
+    }
+
+    /** The pool alone pays Kinnan's {5}{G}{U}, so the engine's floating mana is spent, not our lands. */
+    static boolean kinnanPaidFromPool(Player p) {
+        return p.getManaPool().totalMana() >= KINNAN_ACTIVATION_MANA
+                && poolHas(p, MagicColor.GREEN) && poolHas(p, MagicColor.BLUE);
+    }
+
+    private static boolean pairedWithDeadeye(Player p, String name) {
+        Card c = ourPermanent(p, name);
+        return c != null && c.isPaired() && DEADEYE.equals(c.getPairedWith().getName());
+    }
+
+    /**
+     * Kinnan + Deadeye Navigator + Shang-Chi: Shang-Chi taps for two mana (creature abilities only) and Kinnan adds
+     * one more; two pay Deadeye's {1}{U} flicker, which brings Shang-Chi back untapped, and Deadeye's soulbond pairs
+     * them again. Net +1 per loop, spent on Kinnan's dig for the missing Knacksaw piece (Kinnan's ability is a
+     * creature's, so the restricted mana pays it). The flicker comes first, so the dig never spends the mana that
+     * restarts the loop. Shang-Chi makes G only when the pool has U for the flicker but no G.
+     */
+    private static ComboLine deadeyeShangChi() {
+        Predicate<Player> untapped = p -> {
+            Card shangChi = ourPermanent(p, SHANG_CHI);
+            return shangChi != null && shangChi.isUntapped();
+        };
+        return new ComboLine("kinnan-deadeye-shangchi",
+                List.of(ComboPiece.onBattlefield(DEADEYE), ComboPiece.onBattlefield(SHANG_CHI),
+                        ComboPiece.onBattlefield(KINNAN)),
+                p -> killPieceInLibrary(p) && nextDrawerHasLibrary(p) && pairedWithDeadeye(p, SHANG_CHI),
+                List.of(new ComboStep.Activate(SHANG_CHI, ApiType.ChangeZone, null, untapped.negate(), false),
+                        new ComboStep.Activate(KINNAN, ApiType.Dig, null, ComboLibrary::kinnanPaidFromPool, false),
+                        new ComboStep.ManaAbility(SHANG_CHI, "G",
+                                p -> untapped.test(p) && poolHas(p, MagicColor.BLUE) && !poolHas(p, MagicColor.GREEN)),
+                        new ComboStep.ManaAbility(SHANG_CHI, "U", untapped)),
+                Map.of(), Map.of(), Map.of(DEADEYE, SHANG_CHI));
+    }
+
+    /** The {T} mana ability of our creature {@code c} if it can tap now (summoning sickness and Shang-Chi checked), else null. */
+    private static SpellAbility creatureMana(Card c, Player p) {
+        return c.isCreature() && !c.isAbilitySick() ? ComboPlanner.tapManaAbility(c, p) : null;
+    }
+
+    /**
+     * Mana our creatures make per Great Oak untap, Kinnan's extra mana per source included. Great Oak itself comes
+     * back summoning-sick from each flicker, so it doesn't count.
+     */
+    static int creatureManaPerUntap(Player p) {
+        int perSource = ourPermanent(p, KINNAN) != null ? 1 : 0;
+        int total = 0;
+        for (Card c : p.getCreaturesInPlay()) {
+            SpellAbility mana = c.getName().equals(GREAT_OAK) ? null : creatureMana(c, p);
+            total += mana == null ? 0 : mana.amountOfManaGenerated(true) + perSource;
+        }
+        return total;
+    }
+
+    private static boolean makesBlue(Card c) {
+        SpellAbility mana = creatureMana(c, c.getController());
+        return mana != null && mana.canProduce("U");
+    }
+
+    /** Every creature of ours with a {T} mana ability is untapped: Great Oak's trigger just resolved. */
+    private static boolean creaturesUntapped(Player p) {
+        return !p.getCreaturesInPlay().anyMatch(c -> c.isTapped() && ComboPlanner.tapManaAbility(c, p) != null);
+    }
+
+    /**
+     * Kinnan + Deadeye Navigator + Great Oak Guardian: tap every creature for mana, flicker Great Oak ({1}{U}), its
+     * enter trigger (aimed at us) untaps our creatures, and Deadeye's soulbond pairs them again. Needs creatures making
+     * {1}{U} plus at least two more per untap; the surplus pays Kinnan's dig for the missing Knacksaw piece. The dig
+     * happens only right after an untap, so the creatures still make the next flicker's mana.
+     */
+    private static ComboLine deadeyeGreatOak() {
+        return new ComboLine("kinnan-deadeye-greatoak",
+                List.of(ComboPiece.onBattlefield(DEADEYE), ComboPiece.onBattlefield(GREAT_OAK),
+                        ComboPiece.onBattlefield(KINNAN)),
+                p -> killPieceInLibrary(p) && nextDrawerHasLibrary(p) && pairedWithDeadeye(p, GREAT_OAK)
+                        && creatureManaPerUntap(p) >= GREAT_OAK_MANA_PER_UNTAP
+                        && p.getCreaturesInPlay().anyMatch(ComboLibrary::makesBlue),
+                List.of(new ComboStep.Activate(KINNAN, ApiType.Dig, null,
+                                p -> kinnanPaidFromPool(p) && creaturesUntapped(p), false),
+                        new ComboStep.TapForMana(c -> c.isCreature() && makesBlue(c), "U",
+                                p -> p.getManaPool().getAmountOfColor(MagicColor.BLUE) < 2),   // flicker and dig
+                        new ComboStep.TapForMana(Card::isCreature, "G", p -> true),
+                        new ComboStep.Activate(GREAT_OAK, ApiType.ChangeZone, null, p -> true, false)),
+                Map.of(GREAT_OAK, ComboTarget.self()), Map.of(), Map.of(DEADEYE, GREAT_OAK));
     }
 
     public static final List<ComboLine> ALL = List.of(
@@ -165,7 +346,10 @@ public final class ComboLibrary {
             ComboLine.castInOrder("thoracle-pact", List.of(TAINTED_PACT, ORACLE), ComboLibrary::libraryHasNoDuplicateNames),
             heliodBallista(),
             scepterReversal(),
-            breachLedBrainFreeze()
+            breachLedBrainFreeze(),
+            knacksawVitality(),
+            deadeyeShangChi(),
+            deadeyeGreatOak()
     );
 
     /**
