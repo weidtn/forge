@@ -14,9 +14,12 @@ import forge.game.GameEntity;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
+import forge.game.card.CardLists;
+import forge.game.cost.CostPayment;
 import forge.game.cost.CostTap;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.player.Player;
+import forge.game.spellability.AlternativeCost;
 import forge.game.spellability.SpellAbility;
 import forge.game.trigger.WrappedAbility;
 import forge.game.zone.ZoneType;
@@ -42,8 +45,25 @@ public final class ComboPlanner {
         return null;
     }
 
-    /** A spell of this card we can cast and pay for right now announcing {@code x}, or null. */
-    private SpellAbility castableSpell(Card c, int x) {
+    /** Sets the step's target on {@code sa}; false if it has none the ability can take. */
+    private boolean setTarget(SpellAbility sa, ComboTarget planned) {
+        if (planned == null) {
+            return true;
+        }
+        GameEntity target = planned.pick(ai);
+        sa.resetTargets();
+        if (target == null || !sa.canTarget(target)) {
+            return false;
+        }
+        sa.getTargets().add(target);
+        return true;
+    }
+
+    /**
+     * A spell of this card we can cast and pay for right now announcing {@code x} and taking {@code target} (null:
+     * untargeted), or null. From the graveyard that is an alternative cost such as escape, non-mana parts included.
+     */
+    private SpellAbility castableSpell(Card c, int x, ComboTarget target) {
         for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(new CardCollection(c), ai)) {
             if (!sa.isSpell()) {
                 continue;
@@ -51,7 +71,8 @@ public final class ComboPlanner {
             if (x > 0) {
                 sa.setXManaCostPaid(x);
             }
-            if (sa.canPlay() && ComputerUtilMana.canPayManaCost(sa, ai, 0, false)) {
+            if (sa.canPlay() && setTarget(sa, target) && ComputerUtilMana.canPayManaCost(sa, ai, 0, false)
+                    && CostPayment.canPayAdditionalCosts(sa.getPayCosts(), sa, false, ai)) {
                 return sa;
             }
         }
@@ -64,13 +85,8 @@ public final class ComboPlanner {
             if (sa.isSpell() || sa.isManaAbility() || sa.getApi() != step.api()) {
                 continue;
             }
-            if (step.target() != null) {
-                GameEntity target = step.target().pick(ai);
-                sa.resetTargets();
-                if (target == null || !sa.canTarget(target)) {
-                    continue;
-                }
-                sa.getTargets().add(target);
+            if (!setTarget(sa, step.target())) {
+                continue;
             }
             if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
                 return sa;
@@ -98,6 +114,25 @@ public final class ComboPlanner {
             }
             SpellAbility sa = tapManaAbility(c, ai);
             if (sa != null && sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
+                return sa;
+            }
+        }
+        return null;
+    }
+
+    /** The step's mana ability of our permanent, if playable now; any-colour mana is set to make the step's colour. */
+    private SpellAbility colorManaAbility(ComboStep.ManaAbility step) {
+        Card c = findByName(ai.getCardsIn(ZoneType.Battlefield), step.card());
+        if (c == null) {
+            return null;
+        }
+        for (SpellAbility sa : c.getManaAbilities()) {
+            sa.setActivatingPlayer(ai);
+            if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, ai, false)) {
+                if (sa.getManaPart().isAnyMana()) {
+                    // LED discards the hand before the colour is chosen, so the stock hand-based guess is blind
+                    sa.getManaPart().setExpressChoice(step.color());
+                }
                 return sa;
             }
         }
@@ -137,7 +172,7 @@ public final class ComboPlanner {
         List<SpellAbility> result = new ArrayList<>();
         for (ComboStep step : line.steps()) {
             if (!step.setup()) {
-                continue; // TapForMana is never a setup step, so only Cast and Activate get past here
+                continue; // TapForMana and ManaAbility are never setup steps, so only Cast and Activate get past here
             }
             boolean isCast = step instanceof ComboStep.Cast;
             String name = isCast ? ((ComboStep.Cast) step).card() : ((ComboStep.Activate) step).card();
@@ -284,7 +319,7 @@ public final class ComboPlanner {
             if (canFind == null || !canFind.test(target)) {
                 continue;
             }
-            SpellAbility sa = castableSpell(c, 0);
+            SpellAbility sa = castableSpell(c, 0, null);
             if (sa == null) {
                 continue;
             }
@@ -322,9 +357,15 @@ public final class ComboPlanner {
                 }
                 continue;
             }
+            if (step instanceof ComboStep.ManaAbility mana) {
+                return colorManaAbility(mana);
+            }
             if (step instanceof ComboStep.Cast cast) {
                 Card c = findByName(ai.getCardsIn(ZoneType.Hand), cast.card());
-                return c == null ? null : castableSpell(c, cast.x());
+                if (c == null) {
+                    c = findByName(ai.getCardsIn(ZoneType.Graveyard), cast.card());
+                }
+                return c == null ? null : castableSpell(c, cast.x(), cast.target());
             }
             ComboStep.Activate activate = (ComboStep.Activate) step;
             Card c = findByName(ai.getCardsIn(ZoneType.Battlefield), activate.card());
@@ -357,7 +398,10 @@ public final class ComboPlanner {
         return sa;
     }
 
-    /** Planned target for one of our triggers (e.g. Heliod's counter onto Ballista), or null to let the AI choose. */
+    /**
+     * Planned target for one of our triggers (e.g. Heliod's counter onto Ballista) or for a copy of one of our spells
+     * (Brain Freeze's storm copies), or null to let the AI choose.
+     */
     public GameEntity triggerTarget(SpellAbility trigger) {
         SpellAbility sa = trigger instanceof WrappedAbility wrapped ? wrapped.getWrappedAbility() : trigger;
         if (sa.getHostCard() == null || !sa.usesTargeting()) {
@@ -387,6 +431,17 @@ public final class ComboPlanner {
             }
         }
         return null;
+    }
+
+    /**
+     * The cards an escape cost may exile from {@code options}: all but the Breach line's pieces, which the loop casts
+     * again. Null if {@code sa} isn't cast with escape.
+     */
+    public CardCollection escapeExileOptions(SpellAbility sa, CardCollectionView options) {
+        if (!sa.isAlternativeCost(AlternativeCost.Escape)) {
+            return null;
+        }
+        return CardLists.filter(options, c -> !BreachLoop.PIECES.contains(c.getName()));
     }
 
     /** A legal name guaranteed NOT to be in our library: prefer the win card if it's in hand. */

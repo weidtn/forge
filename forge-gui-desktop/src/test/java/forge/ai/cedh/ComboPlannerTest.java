@@ -286,6 +286,88 @@ public class ComboPlannerTest extends AITest {
         AssertJUnit.assertEquals("shot as soon as life passed 50", 6, p.getLife());
     }
 
+    /** Breach on the battlefield, LED and Brain Freeze in hand, {@code junk} bears in our graveyard as escape fuel. */
+    private void setupBreach(Player p, int junk) {
+        addCards("Island", 3, p);
+        addCard("Underworld Breach", p);
+        addCardToZone("Lion's Eye Diamond", p, ZoneType.Hand);
+        addCardToZone("Brain Freeze", p, ZoneType.Hand);
+        for (int i = 0; i < junk; i++) {
+            addCardToZone("Runeclaw Bear", p, ZoneType.Graveyard);
+        }
+        p.getGame().getAction().checkStateEffects(true);
+    }
+
+    @Test
+    public void winsWithBreachLedBrainFreeze() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        fillLibrary(opp, 60);
+        setupBreach(p, 15);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+        AssertJUnit.assertEquals("opponent milled out this turn", 0, opp.getCardsIn(ZoneType.Library).size());
+        AssertJUnit.assertFalse("we didn't mill ourselves out", p.getCardsIn(ZoneType.Library).isEmpty());
+
+        playUntilNextTurn(game);
+        playUntilGameOverOrPhase(game, PhaseType.MAIN1, 500);   // opponent draws from an empty library
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("opponent should have lost", opp.hasLost());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+    }
+
+    @Test
+    public void breachEscapeNeverExilesLinePieces() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Player opp = game.getPlayers().get(0);
+        fillLibrary(opp, 6);                // one Brain Freeze with its storm copy mills it out
+        addCard("Underworld Breach", p);
+        addCardToZone("Lion's Eye Diamond", p, ZoneType.Graveyard);
+        addCardToZone("Brain Freeze", p, ZoneType.Graveyard);
+        for (int i = 0; i < 6; i++) {       // power 2: the stock exile choice takes LED and Brain Freeze (power 0) first
+            addCardToZone("Runeclaw Bear", p, ZoneType.Graveyard);
+        }
+        game.getAction().checkStateEffects(true);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 1000);
+
+        AssertJUnit.assertEquals(0, countCardsWithName(game, "Lion's Eye Diamond", ZoneType.Exile));
+        AssertJUnit.assertEquals(0, countCardsWithName(game, "Brain Freeze", ZoneType.Exile));
+        AssertJUnit.assertEquals("both escapes paid with bears", 6, countCardsWithName(game, "Runeclaw Bear", ZoneType.Exile));
+        AssertJUnit.assertEquals(0, opp.getCardsIn(ZoneType.Library).size());
+    }
+
+    @Test
+    public void nothingWhenBreachLoopRunsOutOfFuel() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+        ((LobbyPlayerAi) p.getLobbyPlayer()).setAiProfile("cEDH");   // empty library: no self-mill to refuel
+        fillLibrary(game.getPlayers().get(0), 60);
+        setupBreach(p, 6);                  // two iterations' worth of fuel, far short of 60 cards
+
+        AssertJUnit.assertNull(planner(p).nextStep());
+    }
+
+    @Test
+    public void breachLoopMillsItselfForOracle() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);             // 20 cards: milled to Oracle's devotion of 2
+        Player opp = game.getPlayers().get(0);
+        fillLibrary(opp, 60);
+        addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Hand);   // discarded to LED, then escaped
+        setupBreach(p, 15);
+
+        playUntilGameOverOrPhase(game, PhaseType.END_OF_TURN, 3000);
+
+        AssertJUnit.assertTrue("game should be over", game.isGameOver());
+        AssertJUnit.assertTrue("p should have won", p.hasWon());
+        AssertJUnit.assertEquals("won with Oracle", 1, countCardsWithName(game, ComboLibrary.ORACLE));
+        AssertJUnit.assertFalse("opponent not milled out", opp.getCardsIn(ZoneType.Library).isEmpty());
+    }
+
     @Test
     public void keepsHandWithPieceAndTwoLands() {
         Game game = initAndCreateGame();

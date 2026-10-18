@@ -29,6 +29,11 @@ public record ComboPiece(String card, Set<ZoneType> zones) {
         return new ComboPiece(card, Set.of(ZoneType.Battlefield));
     }
 
+    /** In hand, on the battlefield, or in the graveyard, where Underworld Breach lets the line cast it again. */
+    static ComboPiece inHandPlayOrGraveyard(String card) {
+        return new ComboPiece(card, Set.of(ZoneType.Hand, ZoneType.Battlefield, ZoneType.Graveyard));
+    }
+
     /** Our copy of the piece in one of its zones, or null. */
     Card find(Player p) {
         for (ZoneType zone : zones) {

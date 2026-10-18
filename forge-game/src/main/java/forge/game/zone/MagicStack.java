@@ -93,6 +93,11 @@ public class MagicStack /* extends MyObservable */ implements Iterable<SpellAbil
         frozen = frozen0;
     }
 
+    /** Abilities added while the stack is frozen (e.g. storm copies made by a resolving trigger), not on it yet. */
+    public final List<SpellAbilityStackInstance> getFrozenStack() {
+        return Collections.unmodifiableList(frozenStack);
+    }
+
     private int maxDistinctSources = 0;
     public int getMaxDistinctSources() { return maxDistinctSources; }
     public void resetMaxDistinctSources() { maxDistinctSources = 0; }

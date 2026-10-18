@@ -26,6 +26,9 @@ public final class ComboLibrary {
     public static final String SCEPTER = "Isochron Scepter";
     public static final String REVERSAL = "Dramatic Reversal";
     public static final String AETHERFLUX = "Aetherflux Reservoir";
+    public static final String BREACH = "Underworld Breach";
+    public static final String LED = "Lion's Eye Diamond";
+    public static final String BRAIN_FREEZE = "Brain Freeze";
 
     /** Scepter's activation is {2}, {T}. */
     private static final int SCEPTER_ACTIVATION_MANA = 2;
@@ -73,7 +76,7 @@ public final class ComboLibrary {
                 List.of(ComboPiece.inHandOrPlay(HELIOD), ComboPiece.inHandOrPlay(BALLISTA)),
                 p -> true,
                 List.of(ComboStep.Cast.fromHand(HELIOD),
-                        new ComboStep.Cast(BALLISTA, 2, p -> ballistaInHand.find(p) != null, true),
+                        new ComboStep.Cast(BALLISTA, 2, null, p -> ballistaInHand.find(p) != null, true),
                         new ComboStep.Activate(BALLISTA, ApiType.PutCounter, null, p -> ballistaCounters(p) == 1, true),
                         new ComboStep.Activate(HELIOD, ApiType.Pump, ComboTarget.ourCard(BALLISTA),
                                 p -> !ballistaHasLifelink(p), true),
@@ -136,12 +139,33 @@ public final class ComboLibrary {
                 Map.of(), Map.of(SCEPTER, REVERSAL));
     }
 
+    /**
+     * Underworld Breach + Lion's Eye Diamond + Brain Freeze: LED's mana pays for escaping Brain Freeze, whose storm
+     * copies mill opponents (or us, for escape fuel), and LED escapes again. {@link BreachLoop} holds the arithmetic:
+     * the line is live only while its projection reaches the kill, Oracle's (self-mill to its devotion) if Oracle is
+     * in hand or graveyard, else milling every opponent out. Breach in hand is cast first.
+     */
+    private static ComboLine breachLedBrainFreeze() {
+        return new ComboLine("breach-led-brainfreeze",
+                List.of(ComboPiece.inHandOrPlay(BREACH), ComboPiece.inHandPlayOrGraveyard(LED),
+                        ComboPiece.inHandPlayOrGraveyard(BRAIN_FREEZE)),
+                p -> BreachLoop.of(p).live(),
+                List.of(ComboStep.Cast.fromHand(BREACH),
+                        new ComboStep.Cast(ORACLE, 0, null, p -> BreachLoop.of(p).oracleReady(), false),
+                        new ComboStep.Cast(BRAIN_FREEZE, 0, BreachLoop::target,
+                                p -> BreachLoop.of(p).canCastBrainFreeze(), false),
+                        new ComboStep.Cast(LED, 0, null, p -> BreachLoop.of(p).canCastLed(), false),
+                        new ComboStep.ManaAbility(LED, "U", p -> BreachLoop.of(p).ledOnBattlefield())),
+                Map.of(BRAIN_FREEZE, BreachLoop::target), Map.of());
+    }
+
     public static final List<ComboLine> ALL = List.of(
             ComboLine.castInOrder("thoracle-finish", List.of(ORACLE), p -> libraryAtMost(p, 2)),
             ComboLine.castInOrder("thoracle-consult", List.of(CONSULTATION, ORACLE), p -> true),
             ComboLine.castInOrder("thoracle-pact", List.of(TAINTED_PACT, ORACLE), ComboLibrary::libraryHasNoDuplicateNames),
             heliodBallista(),
-            scepterReversal()
+            scepterReversal(),
+            breachLedBrainFreeze()
     );
 
     /**
@@ -157,8 +181,11 @@ public final class ComboLibrary {
             "Personal Tutor", Card::isSorcery
     );
 
-    /** Cards the normal AI must never cast on its own: they only make sense inside a line. */
-    public static final Set<String> COMBO_ONLY = Set.of(ORACLE, CONSULTATION, TAINTED_PACT);
+    /**
+     * Cards the normal AI must never cast on its own: they only make sense inside a line. Breach is sacrificed at end
+     * of turn, so casting it without the loop throws the piece away.
+     */
+    public static final Set<String> COMBO_ONLY = Set.of(ORACLE, CONSULTATION, TAINTED_PACT, BREACH);
 
     public static boolean isComboOnly(Card c) {
         return c != null && COMBO_ONLY.contains(c.getName());

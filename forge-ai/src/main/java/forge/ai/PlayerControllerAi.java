@@ -1366,7 +1366,13 @@ public class PlayerControllerAi extends PlayerController {
             // choosing new targets is optional for a copy of our own spell
             Card original = copy.getHostCard().getCopiedPermanent();
             boolean ownSpell = (original != null ? original : copy.getHostCard()).getController().equals(player);
-            chosen = brains.doTrigger(copy, !ownSpell);
+            GameEntity planned = brains.comboPlannerEnabled() ? brains.getComboPlanner().triggerTarget(copy) : null;
+            if (planned != null) {
+                copy.getTargets().add(planned); // e.g. a Brain Freeze storm copy: self-mill for escape fuel, else an opponent
+                chosen = true;
+            } else {
+                chosen = brains.doTrigger(copy, !ownSpell);
+            }
             for (SpellAbility s = copy; chosen && s != null; s = s.getSubAbility()) {
                 chosen = !s.usesTargeting() || s.isTargetNumberValid();
             }

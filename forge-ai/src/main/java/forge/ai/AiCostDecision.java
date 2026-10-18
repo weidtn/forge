@@ -225,9 +225,24 @@ public class AiCostDecision extends CostDecisionMakerBase {
             // TODO Determine exile from same zone for AI
             return null;
         } else {
-            CardCollectionView chosen = ComputerUtil.chooseExileFrom(player, cost, source, c, ability, isEffect());
+            CardCollectionView chosen = comboEscapeExile(cost, c);
+            if (chosen == null) {
+                chosen = ComputerUtil.chooseExileFrom(player, cost, source, c, ability, isEffect());
+            }
             return null == chosen ? null : PaymentDecision.card(chosen);
         }
+    }
+
+    /** cEDH planner: an escape cost never exiles a piece the Breach loop casts again (stock takes LED, power 0). */
+    private CardCollectionView comboEscapeExile(CostExile cost, int amount) {
+        if (!(player.getController() instanceof PlayerControllerAi pc) || !pc.getAi().comboPlannerEnabled()
+                || cost.zoneRestriction != 1) {
+            return null;
+        }
+        CardCollection valid = CardLists.getValidCards(player.getCardsIn(cost.getFrom()), cost.getType().split(";"),
+                player, source, ability);
+        CardCollection options = pc.getAi().getComboPlanner().escapeExileOptions(ability, valid);
+        return options == null ? null : ComputerUtil.chooseExileFromList(player, options, source, amount, ability, isEffect());
     }
 
     @Override
