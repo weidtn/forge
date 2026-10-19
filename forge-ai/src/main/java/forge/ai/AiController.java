@@ -942,6 +942,9 @@ public class AiController {
             if (!canPlay) {
                 return AiPlayDecision.CantPlayAi;
             }
+            if (comboPlannerEnabled() && comboPlanner.removesProtectedPiece(sa)) {
+                return AiPlayDecision.CantPlayAi; // e.g. our own Essence Flux on Thassa's Oracle
+            }
         } else {
             Cost payCosts = sa.getPayCosts();
             if (payCosts != null) {
@@ -1104,6 +1107,26 @@ public class AiController {
     }
 
     public CardCollection getCardsToDiscard(int min, final int max, final CardCollection validCards, final SpellAbility sa) {
+        if (comboPlannerEnabled() && validCards.size() > min) {
+            // e.g. Thassa's Oracle: every other card goes before a piece of a line that is all in our deck
+            CardCollection pieces = CardLists.filter(validCards, comboPlanner::isProtectedPiece);
+            if (!pieces.isEmpty()) {
+                CardCollection others = new CardCollection(validCards);
+                others.removeAll(pieces);
+                if (others.size() >= min) {
+                    return chooseCardsToDiscard(min, max, others, sa);
+                }
+                CardCollection chosen = chooseCardsToDiscard(min - others.size(), max - others.size(), pieces, sa);
+                if (chosen != null) {
+                    chosen.addAll(others);
+                }
+                return chosen;
+            }
+        }
+        return chooseCardsToDiscard(min, max, validCards, sa);
+    }
+
+    private CardCollection chooseCardsToDiscard(int min, final int max, final CardCollection validCards, final SpellAbility sa) {
         if (validCards.size() <= min) {
             return validCards; //return all valid cards since they will be discarded without filtering needed
         }

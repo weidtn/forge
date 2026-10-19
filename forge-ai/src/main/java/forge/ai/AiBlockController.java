@@ -1107,7 +1107,8 @@ public class AiBlockController {
     }
 
     /**
-     * Core blocker assignment algorithm.
+     * Core blocker assignment algorithm. With the cEDH planner on, our protected combo pieces (Thassa's Oracle) stay
+     * out of blocks unless we would lose this combat without them.
      * @param combat combat instance
      * @param possibleBlockers list of blockers to be considered
      */
@@ -1115,7 +1116,28 @@ public class AiBlockController {
         if (attackers.isEmpty()) {
             return;
         }
+        List<Card> pieces = protectedBlockers(combat, possibleBlockers);
+        if (!pieces.isEmpty()) {
+            List<Card> others = new ArrayList<>(possibleBlockers);
+            others.removeAll(pieces);
+            assignBlockersFrom(combat, others);
+            if (!ComputerUtilCombat.lifeInSeriousDanger(ai, combat)) {
+                return;
+            }
+        }
+        assignBlockersFrom(combat, possibleBlockers);
+    }
 
+    /** Our protected combo pieces among {@code possibleBlockers} that don't have to block anyway. */
+    private List<Card> protectedBlockers(final Combat combat, final List<Card> possibleBlockers) {
+        if (!(ai.getController() instanceof PlayerControllerAi pc) || !pc.getAi().comboPlannerEnabled()) {
+            return List.of();
+        }
+        return CardLists.filter(possibleBlockers, c -> pc.getAi().getComboPlanner().isProtectedPiece(c)
+                && !CombatUtil.mustBlockAnAttacker(c, combat, null) && !StaticAbilityMustBlock.blocksEachCombatIfAble(c));
+    }
+
+    private void assignBlockersFrom(final Combat combat, List<Card> possibleBlockers) {
         clearBlockers(combat, possibleBlockers);
 
         diff = (ai.getLife() * 2) - 5; // This is the minimal gain for an unnecessary trade

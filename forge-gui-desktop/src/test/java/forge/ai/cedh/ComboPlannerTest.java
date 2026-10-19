@@ -18,8 +18,10 @@ import forge.game.Match;
 import forge.game.ability.AbilityKey;
 import forge.game.ability.ApiType;
 import forge.game.card.Card;
+import forge.game.card.CardCollectionView;
 import forge.game.card.CardLists;
 import forge.game.card.CounterEnumType;
+import forge.game.combat.Combat;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
@@ -760,5 +762,100 @@ public class ComboPlannerTest extends AITest {
         addCardToZone(ComboLibrary.TEFERI, p, ZoneType.Library);
         addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Library);
         AssertJUnit.assertTrue(planner(p).keepHand());
+    }
+
+    /** As {@link #setup}, plus Demonic Consultation in the library: Oracle's line is all in the deck. */
+    private Player setupOracleLine(Game game) {
+        Player p = setup(game);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Library);
+        return p;
+    }
+
+    @Test
+    public void discardKeepsOracleOverABear() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);   // default profile first
+        fillLibrary(p, 20);
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Library);
+        addCards("Island", 2, p);
+        Card oracle = addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Hand);
+        Card bear = addCardToZone("Grizzly Bears", p, ZoneType.Hand);
+
+        CardCollectionView discarded = p.getController().chooseCardsToDiscardToMaximumHandSize(1);
+        AssertJUnit.assertEquals(1, discarded.size());
+        AssertJUnit.assertSame("default AI discards Oracle", oracle, discarded.get(0));
+
+        ((LobbyPlayerAi) p.getLobbyPlayer()).setAiProfile("cEDH");
+        discarded = p.getController().chooseCardsToDiscardToMaximumHandSize(1);
+        AssertJUnit.assertEquals(1, discarded.size());
+        AssertJUnit.assertSame("cEDH AI keeps Oracle", bear, discarded.get(0));
+    }
+
+    @Test
+    public void oracleDoesNotAttackIntoAnEmptyBoard() {
+        Game game = initAndCreateGame();
+        Player p = setupOracleLine(game);
+        Card oracle = addCard(ComboLibrary.ORACLE, p);
+        Card bear = addCard("Grizzly Bears", p);
+        oracle.setSickness(false);
+        bear.setSickness(false);
+        game.getAction().checkStateEffects(true);
+
+        Combat combat = ((PlayerControllerAi) p.getController()).getAi().getPredictedCombat();
+
+        AssertJUnit.assertTrue("the bear attacks", combat.isAttacking(bear));
+        AssertJUnit.assertFalse("Oracle stays home", combat.isAttacking(oracle));
+    }
+
+    /** Whether p, at {@code life} with Oracle as its only creature, blocks the opponent's {@code attackerName} with it. */
+    private boolean oracleBlocks(String attackerName, int life) {
+        Game game = initAndCreateGame();
+        Player p = setupOracleLine(game);
+        Player opp = game.getPlayers().get(0);
+        p.setLife(life, null);
+        Card oracle = addCard(ComboLibrary.ORACLE, p);
+        Card attacker = addCard(attackerName, opp);
+        attacker.setSickness(false);
+        game.getPhaseHandler().devModeSet(PhaseType.COMBAT_DECLARE_ATTACKERS, opp);
+        game.getAction().checkStateEffects(true);
+        Combat combat = new Combat(opp);
+        combat.addAttacker(attacker, p);
+        game.getPhaseHandler().setCombat(combat);
+
+        ((PlayerControllerAi) p.getController()).getAi().declareBlockersFor(p, combat);
+
+        return combat.getBlockers(attacker).contains(oracle);
+    }
+
+    @Test
+    public void oracleBlocksOnlyWhenTheAttackIsLethal() {
+        AssertJUnit.assertFalse("Oracle would kill the Elves and survive, but stays out",
+                oracleBlocks("Llanowar Elves", 20));
+        AssertJUnit.assertTrue("Oracle chumps the Giant rather than lose", oracleBlocks("Hill Giant", 3));
+    }
+
+    @Test
+    public void ownEssenceFluxDoesNotFlickerOracle() {
+        Game game = initAndCreateGame();
+        Player p = setupOracleLine(game);
+        addCard("Island", p);
+        addCard(ComboLibrary.ORACLE, p);
+        addCardToZone("Essence Flux", p, ZoneType.Hand);
+        moveToMain2(game, p);   // the stock AI blinks its own enter-trigger creatures from Main 2 on
+
+        List<SpellAbility> chosen = ((PlayerControllerAi) p.getController()).getAi().chooseSpellAbilityToPlay();
+
+        AssertJUnit.assertNull("nothing to play but Essence Flux on Oracle", chosen);
+    }
+
+    /** Without Consultation, Pact or another line's pieces in the deck, Oracle is just a creature. */
+    @Test
+    public void oracleOfAnIncompleteLineIsNotProtected() {
+        Game game = initAndCreateGame();
+        Player p = setup(game);
+        Card oracle = addCardToZone(ComboLibrary.ORACLE, p, ZoneType.Hand);
+        AssertJUnit.assertFalse(planner(p).isProtectedPiece(oracle));
+        addCardToZone(ComboLibrary.CONSULTATION, p, ZoneType.Library);
+        AssertJUnit.assertTrue(planner(p).isProtectedPiece(oracle));
     }
 }

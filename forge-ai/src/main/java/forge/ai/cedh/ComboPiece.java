@@ -61,7 +61,7 @@ public record ComboPiece(String card, Set<ZoneType> zones) {
         return null;
     }
 
-    private static boolean imprintedOnOurs(Player p, Card exiled) {
+    static boolean imprintedOnOurs(Player p, Card exiled) {
         for (Card host : p.getCardsIn(ZoneType.Battlefield)) {
             if (host.hasImprintedCard(exiled)) {
                 return true;

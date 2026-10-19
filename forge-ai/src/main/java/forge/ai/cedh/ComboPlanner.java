@@ -1,7 +1,9 @@
 package forge.ai.cedh;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import forge.ai.AiCardMemory;
@@ -32,6 +34,10 @@ public final class ComboPlanner {
      * engines pay for takes ~15 more.
      */
     static final int MAX_ACTIONS_PER_TURN = 300;
+
+    /** Zones whose cards all count as in our deck (see {@link #deckNames()}). */
+    private static final List<ZoneType> DECK_ZONES = List.of(ZoneType.Hand, ZoneType.Library, ZoneType.Graveyard,
+            ZoneType.Battlefield, ZoneType.Command);
 
     private final Player ai;
     private int actionTurn = -1;
@@ -458,6 +464,55 @@ public final class ComboPlanner {
         return ComboLibrary.keepUntapped(ai, c);
     }
 
+    /** True if our {@code c} must not attack: kept untapped for a line, or a protected piece. */
+    public boolean keepsFromAttacking(Card c) {
+        return keepsUntapped(c) || isProtectedPiece(c);
+    }
+
+    /**
+     * True for a card we own that is a piece of a line of two or more pieces, every one of them in our deck (see
+     * {@link #deckNames()}): the AI doesn't discard it, attack with it, block with it unless it would lose that
+     * combat, or remove it with its own spells. A one-piece line protects nothing: Oracle alone needs some other
+     * engine to empty the library.
+     */
+    public boolean isProtectedPiece(Card c) {
+        if (c.getOwner() != ai) {
+            return false;
+        }
+        Set<String> deck = null;
+        for (ComboLine line : ComboLibrary.ALL) {
+            if (line.pieces().size() < 2 || !isPieceOf(line, c.getName())) {
+                continue;
+            }
+            if (deck == null) {
+                deck = deckNames();
+            }
+            if (wholeLineIn(line, deck)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True if {@code sa} or one of its sub-abilities destroys, exiles, bounces or flickers a protected piece of ours on
+     * the battlefield (the stock AI's own Essence Flux on Oracle). Planner steps never get here: they set their own
+     * targets.
+     */
+    public boolean removesProtectedPiece(SpellAbility sa) {
+        for (SpellAbility s = sa; s != null; s = s.getSubAbility()) {
+            if (s.getApi() != ApiType.ChangeZone && s.getApi() != ApiType.Destroy) {
+                continue;
+            }
+            for (Card c : s.getTargets().getTargetCards()) {
+                if (c.isInPlay() && c.getController() == ai && isProtectedPiece(c)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /** Holds back the cards {@link #keepsUntapped} names from the AI's mana payments until it next chooses a spell. */
     public void holdUntappedPieces() {
         for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
@@ -603,7 +658,7 @@ public final class ComboPlanner {
             }
         } else if (sa.getApi() == ApiType.Dig && ZoneType.Battlefield.name().equals(sa.getParam("DestinationZone"))) {
             for (ComboLine line : ComboLibrary.ALL) {
-                if (line.pieces().stream().noneMatch(piece -> piece.card().equals(host.getName()))) {
+                if (!isPieceOf(line, host.getName())) {
                     continue;
                 }
                 for (ComboPiece piece : line.pieces()) {
@@ -655,23 +710,44 @@ public final class ComboPlanner {
                 && assembledLineCasting(ComboLibrary.TAINTED_PACT) != null;
     }
 
+    private static boolean isPieceOf(ComboLine line, String name) {
+        return line.pieces().stream().anyMatch(piece -> piece.card().equals(name));
+    }
+
+    private static boolean wholeLineIn(ComboLine line, Set<String> deck) {
+        return line.pieces().stream().allMatch(piece -> deck.contains(piece.card()));
+    }
+
+    /**
+     * Names of the cards in our deck a line can still use: in hand, library, graveyard, command zone, on the
+     * battlefield, or in exile while imprinted on our permanent or castable from there (foretold, plotted, may-play).
+     */
+    private Set<String> deckNames() {
+        Set<String> deck = new HashSet<>();
+        for (Card c : ai.getCardsIn(DECK_ZONES)) {
+            deck.add(c.getName());
+        }
+        for (Card c : ai.getCardsIn(ZoneType.Exile)) {
+            if (ComboPiece.imprintedOnOurs(ai, c) || c.isForetold() || c.isPlotted() || !c.mayPlay(ai).isEmpty()) {
+                deck.add(c.getName());
+            }
+        }
+        return deck;
+    }
+
     /**
      * Opening-hand check: keep iff the hand has a combo piece or tutor, and at least two mana sources. A card counts as
-     * a piece if it is a line's win card, or if every piece of that line is in our deck (hand, library, command zone):
+     * a piece if it is a line's win card, or if every piece of that line is in our deck (see {@link #deckNames()}):
      * a loop rock like Sol Ring is not a reason to keep without the rest of its line.
      */
     public boolean keepHand() {
-        List<String> deck = new ArrayList<>();
-        for (Card c : ai.getCardsIn(List.of(ZoneType.Hand, ZoneType.Library, ZoneType.Command))) {
-            deck.add(c.getName());
-        }
+        Set<String> deck = deckNames();
         boolean hasPiece = false;
         int sources = 0;
         for (Card c : ai.getCardsIn(ZoneType.Hand)) {
             String name = c.getName();
             if (ComboLibrary.TUTORS.containsKey(name) || ComboLibrary.ALL.stream().anyMatch(l -> name.equals(l.winCard())
-                    || l.pieces().stream().anyMatch(pc -> pc.card().equals(name))
-                    && l.pieces().stream().allMatch(pc -> deck.contains(pc.card())))) {
+                    || isPieceOf(l, name) && wholeLineIn(l, deck))) {
                 hasPiece = true;
             }
             if (c.isLand() || !c.getManaAbilities().isEmpty()) {
