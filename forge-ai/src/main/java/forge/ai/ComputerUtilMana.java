@@ -52,6 +52,30 @@ import java.util.stream.Collectors;
 public class ComputerUtilMana {
     private final static boolean DEBUG_MANA_PAYMENT = false;
 
+    /**
+     * Values remembered per object, looked up by identity in a short list. Not an IdentityHashMap: that would give the
+     * objects identity hash codes, and drawing one advances the thread's sequence that later identity hash codes - and
+     * with them the iteration order of some hash based collections, and so AI choices - are taken from.
+     */
+    private static final class IdentityMemo<K> {
+        private final List<K> keys = new ArrayList<>();
+        private final List<Integer> values = new ArrayList<>();
+
+        private Integer get(final K key) {
+            for (int i = 0; i < keys.size(); i++) {
+                if (keys.get(i) == key) {
+                    return values.get(i);
+                }
+            }
+            return null;
+        }
+
+        private void put(final K key, final int value) {
+            keys.add(key);
+            values.add(value);
+        }
+    }
+
     public static boolean canPayManaCost(ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
         //check copy of cost so it doesn't modify the exist cost being paid
         cost = new ManaCostBeingPaid(cost);
@@ -103,13 +127,13 @@ public class ComputerUtilMana {
         return new CardCollection(payment.stream().map(s -> s.getHostCard()));
     }
 
-    private static Integer scoreManaProducingCard(final Card card) {
+    private static Integer scoreManaProducingCard(final Card card, final IdentityMemo<SpellAbility> manaScores) {
         int score = 0;
 
         for (SpellAbility ability : card.getSpellAbilities()) {
             ability.setActivatingPlayer(card.getController());
             if (ability.isManaAbility()) {
-                score += ability.calculateScoreForManaAbility();
+                score += manaAbilityScore(ability, manaScores);
                 // TODO check TriggersWhenSpent: decrease score depending on context
             }
             else if (!ability.isTrigger() && ability.isPossible()) {
@@ -130,16 +154,36 @@ public class ComputerUtilMana {
         return score;
     }
 
+    /** scoreManaProducingCard; kept for the rest of a determineLeftoverMana loop once its grouping is reused (see GroupedSourcesReuse). */
+    private static Integer hostScore(final Card card, final IdentityMemo<SpellAbility> manaScores) {
+        final GroupedSourcesReuse reuse = GROUPED_SOURCES_REUSE.get();
+        if (reuse == null || reuse.grouped == null || card.getController() != reuse.ai) {
+            return scoreManaProducingCard(card, manaScores);
+        }
+        Integer score = reuse.hostScores.get(card);
+        if (score == null) {
+            final long draws = MyRandom.callCount();
+            score = scoreManaProducingCard(card, manaScores);
+            if (MyRandom.callCount() == draws) {
+                reuse.hostScores.put(card, score);
+            }
+        }
+        return score;
+    }
+
     private static void sortManaAbilities(final Multimap<ManaCostShard, SpellAbility> sourcesForShards, final ListMultimap<Integer, SpellAbility> manaAbilityMap, final SpellAbility sa, final ManaCostBeingPaid cost) {
         final Map<Card, Integer> manaCardMap = Maps.newHashMap();
         final List<Card> orderedCards = Lists.newArrayList();
+        // calculateScoreForManaAbility() runs a replacement effect scan (canUntap); the card scores below and the sorts
+        // further down ask for the same abilities over and over, and nothing changes the game in between
+        final IdentityMemo<SpellAbility> manaScores = new IdentityMemo<>();
 
         for (final ManaCostShard shard : sourcesForShards.keySet()) {
             for (SpellAbility ability : sourcesForShards.get(shard)) {
                 final Card hostCard = ability.getHostCard();
                 if (!manaCardMap.containsKey(hostCard)) {
                     // TODO +1 when reserved
-                    manaCardMap.put(hostCard, scoreManaProducingCard(hostCard));
+                    manaCardMap.put(hostCard, hostScore(hostCard, manaScores));
                     orderedCards.add(hostCard);
                 }
             }
@@ -229,7 +273,7 @@ public class ComputerUtilMana {
                     return preOrder;
                 }
 
-                return ability1.compareTo(ability2);
+                return compareManaAbilities(ability1, ability2, manaScores);
             });
 
             // stable partition: filter abilities to the back (or the front when they're needed)
@@ -288,6 +332,28 @@ public class ComputerUtilMana {
                 }
             }
         }
+    }
+
+    /** Same result as {@code a.compareTo(b)}, with the scores looked up in (or added to) {@code scores}. */
+    private static int compareManaAbilities(final SpellAbility a, final SpellAbility b, final IdentityMemo<SpellAbility> scores) {
+        if (a.isManaAbility() && b.isManaAbility()) {
+            return manaAbilityScore(a, scores) - manaAbilityScore(b, scores);
+        }
+        return 0;
+    }
+
+    private static int manaAbilityScore(final SpellAbility sa, final IdentityMemo<SpellAbility> scores) {
+        final AbilityManaPart mp = sa.getManaPart();
+        if (mp != null && mp.isSpecialMana()) {
+            // what "Special" mana produces is worked out anew by each call (and by the comparator itself)
+            return sa.calculateScoreForManaAbility();
+        }
+        Integer score = scores.get(sa);
+        if (score == null) {
+            score = sa.calculateScoreForManaAbility();
+            scores.put(sa, score);
+        }
+        return score;
     }
 
     public static SpellAbility chooseManaAbility(ManaCostBeingPaid cost, SpellAbility sa, Player ai, ManaCostShard toPay,
@@ -663,6 +729,8 @@ public class ComputerUtilMana {
         int testEnergyPool = ai.getCounters(CounterEnumType.ENERGY);
         ManaCostShard toPay = null;
         List<SpellAbility> saExcludeList = new ArrayList<>();
+        // a test payment taps nothing, so what a source can add stays the same from one shard to the next
+        final IdentityMemo<SpellAbility> manaAmounts = test ? new IdentityMemo<>() : null;
 
         // Loop over mana needed
         while (!cost.isPaid()) {
@@ -718,7 +786,7 @@ public class ComputerUtilMana {
             saList.removeAll(saExcludeList);
 
             if (toPay == ManaCostShard.GENERIC && !hasConverge && !sa.hasParam("AIManaPref") && !sa.getHostCard().hasSVar("AIManaPref")) {
-                saList = requiredSourcesFirst(saList, cost, sa);
+                saList = requiredSourcesFirst(saList, cost, sa, manaAmounts);
             }
 
             SpellAbility saPayment = saList.isEmpty() ? null : chooseManaAbility(cost, sa, ai, toPay, saList, checkPlayable || !test);
@@ -864,7 +932,8 @@ public class ComputerUtilMana {
     }
 
     // a source adding several mana that is needed either way goes first, so nothing else is tapped beside it for no reason
-    private static Collection<SpellAbility> requiredSourcesFirst(final Collection<SpellAbility> shardProducers, final ManaCostBeingPaid cost, final SpellAbility sa) {
+    private static Collection<SpellAbility> requiredSourcesFirst(final Collection<SpellAbility> shardProducers, final ManaCostBeingPaid cost, final SpellAbility sa,
+            final IdentityMemo<SpellAbility> manaAmounts) {
         final int generic = cost.getGenericManaAmount();
         if (generic < 2) {
             return shardProducers;
@@ -874,14 +943,14 @@ public class ComputerUtilMana {
         int manaTotal = 0;
         List<SpellAbility> required = null;
         for (final SpellAbility ma : shardProducers) {
-            final int amount = manaPerCard != null ? manaPerCard.get(ma.getHostCard()) : ma.totalAmountOfManaGenerated(sa, true);
+            final int amount = manaPerCard != null ? manaPerCard.get(ma.getHostCard()) : totalManaGenerated(ma, sa, manaAmounts);
             if (amount < 2) {
                 continue;
             }
             if (manaPerCard == null) {
                 manaPerCard = Maps.newHashMap();
                 for (final SpellAbility source : shardProducers) {
-                    manaPerCard.merge(source.getHostCard(), source.totalAmountOfManaGenerated(sa, true), Math::max);
+                    manaPerCard.merge(source.getHostCard(), totalManaGenerated(source, sa, manaAmounts), Math::max);
                 }
                 for (final int mana : manaPerCard.values()) {
                     manaTotal += mana;
@@ -904,6 +973,23 @@ public class ComputerUtilMana {
             }
         }
         return required;
+    }
+
+    /** {@code ma.totalAmountOfManaGenerated(sa, true)}, remembered in {@code known} (if given) unless working it out drew random numbers. */
+    private static int totalManaGenerated(final SpellAbility ma, final SpellAbility sa, final IdentityMemo<SpellAbility> known) {
+        if (known == null) {
+            return ma.totalAmountOfManaGenerated(sa, true);
+        }
+        final Integer amount = known.get(ma);
+        if (amount != null) {
+            return amount;
+        }
+        final long draws = MyRandom.callCount();
+        final int generated = ma.totalAmountOfManaGenerated(sa, true);
+        if (MyRandom.callCount() == draws) {
+            known.put(ma, generated);
+        }
+        return generated;
     }
 
     private static void resetPayment(List<SpellAbility> payments) {
@@ -1659,7 +1745,109 @@ public class ComputerUtilMana {
         return sortedManaSources;
     }
 
+    /**
+     * The determineLeftoverMana loops make one test payment per candidate amount, and nothing changes the game between
+     * them: a test payment taps nothing and refunds what it took from the pool. So the mana sources grouped by color at
+     * the start of the first payment are the ones every later payment would group again, and are handed out instead;
+     * the same goes for the scores of the cards those sources are on (which only read the game, and set the activators
+     * of the card's abilities to its controller, the player paying). Not when grouping can have effects of its own -
+     * random draws, AI drawback checks that do more than read the game, "Special" mana or reflected mana that sets the
+     * activators of other players' abilities - then both are worked out anew each time.
+     */
+    private static final class GroupedSourcesReuse {
+        private final Player ai;
+        /** Set right before each test payment of the loop and taken by the first grouping it makes. */
+        private boolean atPaymentStart;
+        private boolean redo;
+        private ListMultimap<Integer, SpellAbility> grouped;
+        private final IdentityMemo<Card> hostScores = new IdentityMemo<>();
+
+        private GroupedSourcesReuse(final Player ai) {
+            this.ai = ai;
+        }
+    }
+    private static final ThreadLocal<GroupedSourcesReuse> GROUPED_SOURCES_REUSE = new ThreadLocal<>();
+
     private static ListMultimap<Integer, SpellAbility> groupSourcesByManaColor(final Player ai, boolean checkPlayable) {
+        final GroupedSourcesReuse reuse = GROUPED_SOURCES_REUSE.get();
+        if (reuse == null || !reuse.atPaymentStart) {
+            return groupSourcesByManaColorAnew(ai, checkPlayable);
+        }
+        reuse.atPaymentStart = false; // the groupings made further into this payment are for other costs
+        if (reuse.grouped != null) {
+            return reuse.grouped;
+        }
+        if (reuse.redo || reuse.ai != ai || !checkPlayable) {
+            reuse.redo = true;
+            return groupSourcesByManaColorAnew(ai, checkPlayable);
+        }
+        final long draws = MyRandom.callCount();
+        final ListMultimap<Integer, SpellAbility> grouped = groupSourcesByManaColorAnew(ai, checkPlayable);
+        // checked afterwards: by then the grouping has looked at every card the check looks at
+        if (MyRandom.callCount() == draws && groupingHasNoEffects(ai)) {
+            reuse.grouped = grouped; // only read by the payments: groupAndOrderToPayShards copies what it takes
+        } else {
+            reuse.redo = true;
+        }
+        return grouped;
+    }
+
+    /**
+     * Whether grouping the mana sources of {@code ai} (getAvailableManaSources looks at battlefield and hand) only
+     * reads the game, so that handing out an earlier grouping is the same as grouping again.
+     */
+    private static boolean groupingHasNoEffects(final Player ai) {
+        for (final Card c : CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand))) {
+            for (final SpellAbility m : c.getManaAbilities()) {
+                for (SpellAbility tail = m; tail != null; tail = tail.getSubAbility()) {
+                    final AbilityManaPart mp = tail.getManaPart();
+                    if (mp != null && mp.isSpecialMana()) {
+                        return false; // what it produces is worked out anew, and stored, on every look
+                    }
+                }
+                if (m.getApi() == ApiType.ManaReflected && !reflectsOnlyOwnCards(m)) {
+                    return false;
+                }
+            }
+            for (final SpellAbility m : getAIPlayableMana(c)) {
+                if (!hasReadOnlyDrawbackCheck(m)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether the AI drawback check grouping runs for the sub abilities of mana ability {@code m} only reads the game:
+     * true for none, for mana (ManaAi keeps the default check, which only looks at targeting) and for fixed damage to
+     * defined players or cards (pain lands; DamageDealAi only predicts the damage then).
+     */
+    private static boolean hasReadOnlyDrawbackCheck(final SpellAbility m) {
+        for (AbilitySub sub = m.getSubAbility(); sub != null; sub = sub.getSubAbility()) {
+            if (sub.usesTargeting()) {
+                return false;
+            }
+            final boolean fixedDamage = sub.getApi() == ApiType.DealDamage && !sub.hasParam("AILogic")
+                    && !sub.hasParam("AIExpectAmount") && StringUtils.isNumeric(sub.getParam("NumDmg"));
+            if (sub.getApi() != ApiType.Mana && !fixedDamage) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Reflected mana that looks at what colors cards are (Chrome Mox) only reads; one that looks at what other cards could
+     * produce (Incubation Druid) sets their abilities' activators to their controllers, which is {@code ai} - the
+     * activator every payment gives them anyway - only while it looks at cards of its own controller.
+     */
+    private static boolean reflectsOnlyOwnCards(final SpellAbility m) {
+        final String property = m.getParam("ReflectProperty");
+        return "Is".equals(property) || ("Produce".equals(property) && m.getParamOrDefault("Valid", "").contains("YouCtrl"));
+    }
+
+    private static ListMultimap<Integer, SpellAbility> groupSourcesByManaColorAnew(final Player ai, boolean checkPlayable) {
         final ListMultimap<Integer, SpellAbility> manaMap = ArrayListMultimap.create();
         final Game game = ai.getGame();
 
@@ -1791,12 +1979,50 @@ public class ComputerUtilMana {
             sa.setXManaCostPaid(max);
             max = Math.min(max, AbilityUtils.calculateAmount(sa.getHostCard(), sa.getParam("AIXMax"), sa));
         }
-        for (int i = 1; i <= max; i++) {
-            if (!canPayManaCost(sa.getRootAbility(), player, i, effect)) {
-                return i - 1;
+        final SpellAbility root = sa.getRootAbility();
+        final GroupedSourcesReuse reuse = beginGroupedSourcesReuse(player);
+        try {
+            for (int i = 1; i <= max; i++) {
+                // canPayManaCost(root, player, i, effect), with the payment itself marked for the grouping reuse
+                final ManaCostBeingPaid cost = calculateManaCost(root.getPayCosts(), root, player, true, i, effect);
+                if (!testPayment(cost, root, player, effect, reuse)) {
+                    return i - 1;
+                }
             }
+        } finally {
+            endGroupedSourcesReuse(reuse);
         }
         return max;
+    }
+
+    /** A reuse scope for a determineLeftoverMana loop, or null when one is already running on this thread. */
+    private static GroupedSourcesReuse beginGroupedSourcesReuse(final Player ai) {
+        if (GROUPED_SOURCES_REUSE.get() != null) {
+            return null;
+        }
+        final GroupedSourcesReuse reuse = new GroupedSourcesReuse(ai);
+        GROUPED_SOURCES_REUSE.set(reuse);
+        return reuse;
+    }
+
+    private static void endGroupedSourcesReuse(final GroupedSourcesReuse reuse) {
+        if (reuse != null) {
+            GROUPED_SOURCES_REUSE.remove();
+        }
+    }
+
+    /** Same as {@code payManaCost(cost, sa, ai, true, true, effect) != null}; {@code cost} gets modified. */
+    private static boolean testPayment(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect,
+            final GroupedSourcesReuse reuse) {
+        if (reuse == null) {
+            return payManaCost(cost, sa, ai, true, true, effect) != null;
+        }
+        reuse.atPaymentStart = true;
+        try {
+            return payManaCost(cost, sa, ai, true, true, effect) != null;
+        } finally {
+            reuse.atPaymentStart = false;
+        }
     }
 
     /**
@@ -1817,12 +2043,19 @@ public class ComputerUtilMana {
         ManaCost origCost = sa.getRootAbility().getPayCosts().getTotalMana();
 
         String shardSurplus = shardColor;
-        for (int i = 1; i < 100; i++) {
-            ManaCost extra = new ManaCost(shardSurplus);
-            if (!canPayManaCost(new ManaCostBeingPaid(ManaCost.combine(origCost, extra)), sa, player, effect)) {
-                return i - 1;
+        final GroupedSourcesReuse reuse = beginGroupedSourcesReuse(player);
+        try {
+            for (int i = 1; i < 100; i++) {
+                ManaCost extra = new ManaCost(shardSurplus);
+                // canPayManaCost(cost, sa, player, effect), which pays a copy of the cost
+                final ManaCostBeingPaid cost = new ManaCostBeingPaid(ManaCost.combine(origCost, extra));
+                if (!testPayment(new ManaCostBeingPaid(cost), sa, player, effect, reuse)) {
+                    return i - 1;
+                }
+                shardSurplus += " " + shardColor;
             }
-            shardSurplus += " " + shardColor;
+        } finally {
+            endGroupedSourcesReuse(reuse);
         }
         return 99;
     }

@@ -36,6 +36,9 @@ import forge.util.WordUtil;
 import forge.util.storage.IStorage;
 
 public class SimulateMatch {
+    /** Seconds an AI may think per decision in simulated games; null keeps the game's default. */
+    private static Integer aiTimeout;
+
     public static void simulate(String[] args) {
         FModel.initialize(null, null);
 
@@ -87,6 +90,11 @@ public class SimulateMatch {
         }
 
         boolean outputGamelog = !params.containsKey("q");
+
+        if (params.containsKey("T")) {
+            // a decision cut short by the wall clock depends on machine speed, so seeded runs only replay with a high value
+            aiTimeout = Integer.parseInt(params.get("T").get(0));
+        }
 
         Long seed = null;
         if (params.containsKey("s")) {
@@ -191,7 +199,7 @@ public class SimulateMatch {
     }
 
     private static void argumentHelp() {
-        System.out.println("Syntax: forge.exe sim -d <deck1[.dck]> ... <deckX[.dck]> -D [D] -n [N] -m [M] -t [T] -p [P] -f [F] -s [S] -a [A] -q");
+        System.out.println("Syntax: forge.exe sim -d <deck1[.dck]> ... <deckX[.dck]> -D [D] -n [N] -m [M] -t [T] -p [P] -f [F] -s [S] -a [A] -T [AIT] -q");
         System.out.println("\tsim - stands for simulation mode");
         System.out.println("\tdeck1 (or deck2,...,X) - constructed deck name or filename (has to be quoted when contains multiple words)");
         System.out.println("\tdeck is treated as file if it ends with a dot followed by three numbers or letters");
@@ -204,6 +212,7 @@ public class SimulateMatch {
         System.out.println("\tS - RNG seed for simulation");
         System.out.println("\tA - AI profile per player, in the same order as the decks (e.g. -a Default Experimental)");
         System.out.println("\tc - Clock flag. Set the maximum time in seconds before calling the match a draw, defaults to 120.");
+        System.out.println("\tAIT - AI timeout in seconds per decision (defaults to the game's default of 5). Raise it for reproducible seeded runs.");
         System.out.println("\tq - Quiet flag. Output just the game result, not the entire game log.");
     }
 
@@ -213,6 +222,9 @@ public class SimulateMatch {
 
         final Game g1 = mc.createGame();
         g1.setNoGUIUser();
+        if (aiTimeout != null) {
+            g1.AI_TIMEOUT = aiTimeout;
+        }
         // will run match in the same thread
         try {
             TimeLimitedCodeBlock.runWithTimeout(() -> {

@@ -89,6 +89,15 @@ import static java.lang.Math.max;
  * @version $Id$
  */
 public class AiController {
+    /**
+     * How deeply {@link #canPlayFromEffectAI} may nest on one thread. Some abilities evaluate each other without end
+     * (a copy spell checking a charm on the stack whose mana ritual mode checks that copy spell again). Such a loop
+     * used to run until the stack overflowed, at a depth that depends on JIT state and frame sizes, so the random
+     * draws made on the way - and with them the rest of a seeded game - varied between identical runs.
+     * It now overflows at this fixed depth instead: same outcome (the evaluation is abandoned), reproducible.
+     */
+    private static final int MAX_EFFECT_EVAL_DEPTH = 8;
+    private static final ThreadLocal<int[]> EFFECT_EVAL_DEPTH = ThreadLocal.withInitial(() -> new int[1]);
     private final Player player;
     private final Game game;
     private final AiCardMemory memory;
@@ -1335,10 +1344,19 @@ public class AiController {
     public AiPlayDecision canPlayFromEffectAI(Spell spell, boolean mandatory, boolean withoutPayingManaCost) {
         if (spell instanceof SpellApiBased) {
             boolean chance;
-            if (withoutPayingManaCost) {
-                chance = SpellApiToAi.Converter.get(spell).doTriggerNoCostWithSubs(player, spell, mandatory).willingToPlay();
-            } else {
-                chance = SpellApiToAi.Converter.get(spell).doTrigger(player, spell, mandatory);
+            final int[] depth = EFFECT_EVAL_DEPTH.get();
+            if (depth[0] >= MAX_EFFECT_EVAL_DEPTH) {
+                throw new StackOverflowError("AI effect evaluation nested " + depth[0] + " deep at " + spell.getHostCard());
+            }
+            depth[0]++;
+            try {
+                if (withoutPayingManaCost) {
+                    chance = SpellApiToAi.Converter.get(spell).doTriggerNoCostWithSubs(player, spell, mandatory).willingToPlay();
+                } else {
+                    chance = SpellApiToAi.Converter.get(spell).doTrigger(player, spell, mandatory);
+                }
+            } finally {
+                depth[0]--;
             }
             if (!chance) {
                 return AiPlayDecision.TargetingFailed;

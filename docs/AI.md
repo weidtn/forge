@@ -41,6 +41,7 @@ Please understand, the AI is still the AI, and it's limitations exist even again
 - `-p [P]` - [P] number of players paired, only used in tournament mode. Default is 2.
 - `-q` - Quiet Mode, only prints the result not the entire log.
 - `-c [S]` - Clock flag, maximum time of [S] seconds before calling the match a draw. Default is 120.
+- `-T [S]` - AI timeout of [S] seconds per decision. Default is the game's 5. A decision cut short by the clock depends on machine speed, so give seeded runs (`-s`) that must replay identically a value no decision reaches, e.g. `-T 100000`.
 
 ## Examples
 In Windows, if you use the EXE file as described below, the simulation runs in the background and output is sent to the forge log file only. If you want to have output to the console, please use the `java -jar` evocation of forge.

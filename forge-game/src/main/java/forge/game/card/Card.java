@@ -7127,6 +7127,10 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
     public FCollectionView<ReplacementEffect> getReplacementEffects() {
         return currentState.getReplacementEffects();
     }
+    /** Puts what {@link #getReplacementEffects()} returns into {@code result}, which must be empty. */
+    public void collectReplacementEffects(final FCollection<ReplacementEffect> result) {
+        currentState.collectReplacementEffects(result);
+    }
 
     public ReplacementEffect addReplacementEffect(final ReplacementEffect replacementEffect) {
         currentState.addReplacementEffect(replacementEffect);

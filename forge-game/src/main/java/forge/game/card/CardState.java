@@ -738,6 +738,18 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
     }
     public FCollectionView<ReplacementEffect> getReplacementEffects(boolean rulesHost) {
         FCollection<ReplacementEffect> result = new FCollection<>(replacementEffects);
+        addReplacementEffectChanges(result, rulesHost);
+        return result;
+    }
+    /**
+     * Puts what {@link #getReplacementEffects()} returns into {@code result}, which must be empty. Lets a caller that
+     * only iterates the effects of many cards reuse one collection instead of allocating one per card.
+     */
+    public void collectReplacementEffects(FCollection<ReplacementEffect> result) {
+        result.addAll(replacementEffects);
+        addReplacementEffectChanges(result, true);
+    }
+    private void addReplacementEffectChanges(FCollection<ReplacementEffect> result, boolean rulesHost) {
         // add Split to Original
         if (getStateName().equals(CardStateName.Original)) {
             if (getCard().hasState(CardStateName.LeftSplit))
@@ -749,7 +761,7 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
         card.updateReplacementEffects(result, this, rulesHost);
 
         if (!rulesHost) {
-            return result;
+            return;
         }
 
         // below are global rules
@@ -771,8 +783,6 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
             }
             result.add(vengeanceRep);
         }
-
-        return result;
     }
     public boolean addReplacementEffect(final ReplacementEffect replacementEffect) {
         return replacementEffects.add(replacementEffect);

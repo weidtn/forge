@@ -50,6 +50,7 @@ import forge.game.zone.ZoneType;
 import forge.util.Localizer;
 import forge.util.TextUtil;
 import forge.util.Visitor;
+import forge.util.collect.FCollection;
 
 public class ReplacementHandler {
     private final Game game;
@@ -106,6 +107,8 @@ public class ReplacementHandler {
         }
 
         final List<ReplacementEffect> possibleReplacers = Lists.newArrayList();
+        // one collection for the effects of each visited card in turn: this scan runs over every card in the game
+        final FCollection<ReplacementEffect> cardEffects = new FCollection<>();
 
         // Round up Static replacement effects
         game.forEachCardInGame(crd -> {
@@ -140,7 +143,9 @@ public class ReplacementHandler {
                 }
             }
 
-            for (final ReplacementEffect replacementEffect : c.getReplacementEffects()) {
+            cardEffects.clear();
+            c.collectReplacementEffects(cardEffects);
+            for (final ReplacementEffect replacementEffect : cardEffects) {
                 if (!replacementEffect.hasRun() && !hasRun.contains(replacementEffect)
                         && (layer == null || replacementEffect.getLayer() == layer)
                         && replacementEffect.modeCheck(event, runParams)
